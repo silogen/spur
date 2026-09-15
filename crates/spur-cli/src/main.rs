@@ -18,6 +18,7 @@ mod mock_controller;
 mod net;
 mod node;
 mod nodelist;
+mod plugin;
 mod privilege;
 mod reason;
 mod sacct;
@@ -294,13 +295,90 @@ fn main() -> anyhow::Result<()> {
             print_usage();
             Ok(())
         }
-        other => {
-            eprintln!("spur: unknown command '{}'", other);
-            eprintln!();
-            print_usage();
-            std::process::exit(1);
+        "plugin" => {
+            match args.get(2).map(String::as_str) {
+                Some("list") | None => plugin::cmd_list(is_builtin),
+                Some(other) => {
+                    eprintln!("spur: unknown plugin command '{other}'");
+                    eprintln!("Usage: spur plugin list");
+                    std::process::exit(1);
+                }
+            }
+            Ok(())
         }
+        _ => plugin::dispatch(&args[1..], is_builtin),
     }
+}
+
+/// Every command name the native dispatch above answers to. A plugin with one
+/// of these names never runs; `spur plugin list` reports it as shadowed.
+const BUILTIN_COMMANDS: &[&str] = &[
+    "submit",
+    "run",
+    "salloc",
+    "alloc",
+    "queue",
+    "jobs",
+    "cancel",
+    "kill",
+    "nodes",
+    "info",
+    "history",
+    "acct",
+    "accounts",
+    "acctmgr",
+    "show",
+    "control",
+    "ctl",
+    "priority",
+    "prio",
+    "share",
+    "fairshare",
+    "stat",
+    "jobstat",
+    "diag",
+    "diagnostics",
+    "report",
+    "usage",
+    "trigger",
+    "triggers",
+    "attach",
+    "crontab",
+    "cron",
+    "health",
+    "monitor",
+    "sbatch",
+    "srun",
+    "squeue",
+    "scancel",
+    "sinfo",
+    "sacct",
+    "sacctmgr",
+    "scontrol",
+    "sprio",
+    "sshare",
+    "sstat",
+    "sdiag",
+    "sreport",
+    "strigger",
+    "sattach",
+    "scrontab",
+    "smd",
+    "net",
+    "node",
+    "k8s",
+    "image",
+    "exec",
+    "token",
+    "version",
+    "self-update",
+    "update",
+    "help",
+    "plugin",
+];
+
+fn is_builtin(name: &str) -> bool {
+    BUILTIN_COMMANDS.contains(&name)
 }
 
 fn print_usage() {
@@ -333,10 +411,16 @@ fn print_usage() {
     eprintln!("  health      Node health monitoring");
     eprintln!("  version     Show version (--check to check for updates)");
     eprintln!("  self-update Download and install the latest version (--nightly)");
+    eprintln!("  plugin      List the spur-* plugins found on PATH");
     eprintln!();
     eprintln!("Slurm-compatible aliases (also work as symlinks):");
     eprintln!("  salloc sbatch srun squeue scancel sinfo sacct sacctmgr scontrol");
     eprintln!("  sprio sshare sstat sdiag sreport strigger sattach scrontab smd");
+    let plugins = plugin::names();
+    if !plugins.is_empty() {
+        eprintln!();
+        eprintln!("Plugins found on PATH: {}", plugins.join(" "));
+    }
 }
 
 #[cfg(test)]
