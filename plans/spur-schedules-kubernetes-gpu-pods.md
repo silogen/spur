@@ -1,249 +1,310 @@
-# Plan: Spur schedules Kubernetes GPU pods at GPU granularity
+# Plan: Spur and Kubernetes share the GPUs of one node
 
-Date 2026-09-18. Based on `spur` main at `9ea65a8`, cluster-forge worktree
-`EAI-8560-byok`, and the research in `plans/spur-k8s-gpu-coscheduling.md`.
+Date 2026-09-23, revision 2. Replaces the revision of 2026-09-18. Based on
+`spur` main at `eb02dd0`, cluster-forge worktree `EAI-8560-byok`, the
+research in `plans/spur-k8s-gpu-coscheduling.md` and the decisions in
+`plans/spur-k8s-gpu-sharing-grill.md`. Section 8 lists what changed and
+why. Decisions marked "pending" have a recommendation but no confirmation
+yet; the grill file names the open question.
 
 ## 1. Requirement
 
-A customer runs Spur jobs and Kubernetes GPU pods (aim-engine through KServe)
-on the same nodes. The customer wants:
+Spur jobs and Kubernetes GPU pods (aim-engine through KServe) run on the
+same nodes. The requirement is:
 
-- GPU granularity. A node with 8 GPUs can hold 3 GPUs of Spur jobs and 5 GPUs
-  of pods at the same time, and the split changes with the load.
-- One queue. Spur's priority, QoS, fair-share and reservations apply to the
-  pods as well as to the native jobs.
-- No change in aim-engine. AIM objects, KServe and the AMD GPU operator stay
-  as they are.
+- GPU granularity. A node with 8 GPUs can hold 3 GPUs of Spur jobs and 5
+  GPUs of pods at the same time, and the split changes with the load.
+- Opt-in per node. An administrator marks a node as shared. A node that is
+  not marked keeps today's rule: an enrolled node is all Kubernetes.
+- Shared visibility. Both sides show, per GPU, who holds it.
+- No over-allocation. One GPU is never held by a Spur job and a pod at the
+  same time.
+- No change in aim-engine, KServe, the AMD GPU operator, the AMD device
+  plugin or the AMD DRA driver. No fork, no patch. Changes go to Spur only.
+
+Not required, decided out of scope: one queue for pods and jobs, and
+eviction in either direction. Both sides keep their own queue.
 
 ## 2. The device conflict
 
 Two allocators hand out the same GPUs and neither sees the other.
 
-- Spur. `spurd` discovers the GPUs from the KFD topology, gives each a
-  sequential `device_id`, and reports them once at registration. `spurctld`
-  allocates whole GPUs per `device_id` (`crates/spur-sched/src/cons_tres.rs`)
-  and writes the allocation to the Raft log. At launch `spurd` installs a
-  cgroup-v2 BPF device filter that permits only the allocated
-  `/dev/dri/renderD*` and `/dev/kfd`.
-- Kubernetes. The AMD device plugin publishes the GPUs to the kubelet with the
-  PCI BDF as the ID. The Kubernetes scheduler sees only the count. The kubelet
-  picks the IDs and containerd applies a device cgroup for the pod.
-- Neither filter bounds the other side. KFD lets any number of processes open
-  one GPU, so both launches succeed. The failure appears later as VRAM
-  out-of-memory or compute contention in the workload.
+- Spur. `spurd` discovers the GPUs from the KFD topology and reports them
+  at registration. `spurctld` allocates whole GPUs
+  (`crates/spur-sched/src/cons_tres.rs`) and writes the allocation to the
+  Raft log. At launch `spurd` installs a cgroup-v2 BPF device filter that
+  permits only the allocated `/dev/dri/renderD*` and `/dev/kfd`.
+- Kubernetes. The AMD driver publishes the GPUs to the kubelet. With the
+  device plugin the scheduler sees a count and the kubelet picks the
+  device. With the DRA driver the scheduler allocates a named device into
+  a `ResourceClaim`.
+- Neither filter bounds the other side. KFD lets any number of processes
+  open one GPU, so both launches succeed. The failure appears later as
+  VRAM out-of-memory or compute contention.
 
-Today Spur avoids the conflict with a node-level rule. A node that `spur k8s
-up` enrolled has a `k0s_role`, and `NodePlacement::matches()` excludes it from
-Spur placement (`crates/spur-sched/src/node_match.rs:160-164`). The job pends
-with "ReqNodeNotAvail, Reserved for Kubernetes cluster". The PR that added the
-rule (ROCm/spur#558) says "dual-use would need arbitration that doesn't exist
-yet. Dual-use workers can be a future opt-in." No issue or roadmap item tracks
-that follow-up. On a cluster that Spur does not manage there is no rule at all.
+Today Spur avoids the conflict with a node-level rule. A node that `spur
+k8s up` enrolled has a `k0s_role`, and `NodePlacement::matches()` excludes
+it from Spur placement (`crates/spur-sched/src/node_match.rs`). The job
+pends with "ReqNodeNotAvail, Reserved for Kubernetes cluster". PR
+ROCm/spur#558 that added the rule says "Dual-use workers can be a future
+opt-in". No issue tracks that follow-up.
 
 ## 3. What the roadmap covers
 
-`plans/implementation-roadmap.md`, dated 2026-03-17, Phase 11 "Kubernetes
-Integration" and Phase 13 "Inference Workloads".
-
-| Item | What it says | Status | Does it address the conflict |
-|---|---|---|---|
-| 11.1 SpurJob CRD + operator | A SpurJob resource becomes a Spur job and Spur creates the pod with `amd.com/gpu: N`. | Done (`crates/spur-k8s`). | No. The kubelet still picks the device IDs. Ordinary pods, such as KServe pods, do not pass through it. |
-| 11.2 Virtual kubelet | Kubernetes hands pod specs to `spurd` as `LaunchJobRequest`. Spur executes the pod. | Not started. | Yes, but only by making Spur the only executor. The real kubelet, the AMD device plugin and KServe would no longer run the pod. |
-| 11.3 Node pool unification | One `spur nodes` view for native and Kubernetes nodes. | Partial. `node_watcher.rs` registers Kubernetes nodes. The `[kubernetes]` config block exists but nothing reads it. | No. |
-| 11.4 GPU topology | XGMI-aware placement. | Not started. Data is collected, the allocator ignores it. | No. |
-| 11.5 Gang scheduling | All-or-nothing multi-node placement. | Partial, for heterogeneous job groups. | No. |
-| 13.1 to 13.5 Inference | Service jobs, partitions, autoscaling, router, templates, all as native Spur jobs. | Not started. | No. It replaces the pod stack instead of sharing with it. |
-
-Conclusion. The roadmap gives GPU granularity only when Spur executes every
-GPU workload itself (11.2). It has no item for a real kubelet and `spurd`
-sharing the GPUs of one node. This plan adds that item and builds the
-customer's queue requirement on top of it.
+`plans/implementation-roadmap.md` Phase 11 gives GPU granularity only when
+Spur executes every GPU workload itself (11.2, virtual kubelet, not
+started). It has no item for a real kubelet and `spurd` sharing the GPUs
+of one node. This plan adds that item. Items 11.2, 11.4, 11.5 and 13.x
+stay untouched.
 
 ## 4. Design
 
-Two layers. The first one removes the conflict. The second one gives Spur the
-queue. The second one depends on the first one.
+### 4.1 Kubernetes is the ledger of record
 
-### 4.1 Layer 1: spurd as the device driver of the kubelet
+With no change to the AMD driver, the only supported way to keep a GPU
+away from pods is that Kubernetes allocates it to something Spur owns.
+So the Kubernetes allocation ledger is the ledger of record for every GPU
+on a shared node. Spur writes into it and reads from it.
 
-On a dual-use node `spurd` publishes the GPUs to the kubelet. The AMD device
-plugin is off on that node. The AMD GPU operator keeps its node labeller, its
-metrics exporter and its driver management.
+Verified 2026-09-23 from Kubernetes 1.36 and AMD sources:
 
-- `spurd` publishes only the GPUs that Spur has not allocated.
-- Before `spurd` launches a Spur job, it withdraws the job's GPUs from the
-  published list, waits for the kubelet to acknowledge, then installs the
-  cgroup filter and launches. The kubelet lowers the allocatable count. Pods
-  that already run keep their GPUs.
-- When the kubelet gives a GPU to a pod, `spurd` records the GPU as held by a
-  foreign owner and reports it to `spurctld`. The scheduler treats it as
-  allocated. When the pod ends, `spurd` releases the hold.
-- `spurd` rebuilds its hold table on restart from the kubelet's device
-  checkpoint or from the DRA prepare calls, and from the controller's
-  allocation for its own jobs.
+- Only kube-scheduler allocates a `ResourceClaim`, and only while it
+  schedules a pod. A pod with `spec.nodeName` bypasses the scheduler and
+  never gets its claim. There is no supported allocate call for a client.
+- `DeviceTaintRule` is the other native mechanism. The KEP documents a
+  race with the scheduler, `NoSchedule` has no status to wait for, the
+  rule selects by device name only, and on 1.36 both the API version and
+  the feature gate are off by default. A pod that wins the race keeps
+  running, which breaks the no-over-allocation requirement. Rejected,
+  pending confirmation (grill Q10b).
+- Writing `ResourceClaim.status.allocation` directly, or editing the AMD
+  driver's `ResourceSlice`, is undocumented and the driver rewrites the
+  slice. Rejected.
 
-Two protocols can do this. The device plugin API is count-based; the
-Kubernetes scheduler binds by count and the kubelet picks the ID, so there is
-a window in which both sides claim the last GPU. The loser fails at launch and
-retries: Spur through the existing `ResourcesUnavailable` requeue path,
-Kubernetes through the Deployment that recreates the pod. The DRA driver API
-names devices: `spurd` publishes a `ResourceSlice` with one device per free
-GPU, the scheduler allocates a named device, and `spurd` learns it at
-`NodePrepareResources`. A `NoSchedule` device taint hides a GPU, a `NoExecute`
-taint evicts the pod that holds it. DRA extended-resource mapping lets a
-`DeviceClass` answer `amd.com/gpu` requests, so AIM pods need no change. DRA
-is the target. The device plugin API is the fallback if the k0s version cannot
-give DRA.
+### 4.2 DRA only on shared nodes
 
-### 4.2 Layer 2: Spur places the pods
+A shared node runs the AMD DRA driver (`gpu.amd.com`), not the device
+plugin. DRA names the device at scheduling time, so Spur keeps topology
+placement and learns a hold before the pod starts. The device plugin
+gives a count and Spur would learn the device only after the pod starts.
 
-The pod keeps everything KServe gives it. It gets one more field,
-`spec.schedulerName: spur`. The default scheduler ignores such a pod. A Spur
-scheduler component picks it up.
+Facts that shape this:
 
-1. The component sees an unbound pod with `schedulerName: spur`. It submits a
-   placeholder job to `spurctld` with the GPU count, CPU and memory of the
-   pod, the node constraints from the pod's affinity and selectors, and the
-   account that the pod's namespace maps to. The quota controller already
-   defines the account-to-namespace mapping.
-2. `spurctld` queues the placeholder as an ordinary job. Priority, QoS,
-   fair-share, reservations and backfill apply. It allocates a node and, with
-   layer 1, the GPUs.
-3. The component binds the pod to the node. The kubelet starts it. `spurd`,
-   as the device driver, gives the pod the GPUs of the placeholder.
-4. When the pod ends, the component cancels the placeholder. When Spur
-   preempts the placeholder, the component evicts the pod. KServe recreates
-   the pod and it re-enters Spur's queue.
+- The driver names a device `gpu-<card>-<renderD>`, pool name is the node
+  name, and publishes `resource.kubernetes.io/pciBusID` in extended BDF
+  with the domain, `0000:19:00.0`. CPX partitions carry the parent's
+  `pciBusID` and differ only by name.
+- gpu-operator 1.5.0 is the first release with `spec.draDriver`; 1.5.1 is
+  the latest and supports Kubernetes 1.29 to 1.36. One `DeviceConfig`
+  with both the device plugin and the DRA driver is rejected by the
+  reconciler. Two `DeviceConfig`s with disjoint node selectors are
+  accepted: device plugin on ordinary nodes, DRA on shared nodes.
+- The `amd.com/gpu` extended-resource mapping is only on the DRA driver's
+  `develop` branch, not in v1.0.1. Until a release ships it, pods on a
+  shared node must request a `ResourceClaim`. AIM pods request
+  `amd.com/gpu` today, so they land only on ordinary nodes. Pending
+  (grill Q18): implement and test with a `ResourceClaim`, announce the
+  feature after the driver release.
 
-Two ways to build the component. A kube-scheduler framework plugin is a Go
-binary with `Filter`, `Reserve` and `Bind` hooks. A scheduler extender is
-three HTTP endpoints, filter, prioritize and bind, that the stock
-kube-scheduler calls; `spurctld` can serve them in Rust. The extender is the
-smaller change and it keeps the logic in `spurctld`. Spur already renders the
-k0s configuration, so it can register the extender itself.
+### 4.3 Spur to Kubernetes: the placeholder pod
 
-The layer is optional per namespace. A namespace without the field keeps the
-default scheduler and gets only layer 1.
+For each Spur job on a shared node, `spurd` creates one placeholder pod
+before it launches the job.
+
+- The pod runs the pause image that k0s already uses for sandboxes, has
+  no CPU or memory request, and carries the Spur job id, user and account
+  as labels.
+- The pod references one `ResourceClaim` with one request per GPU. Each
+  request selects the device with a CEL expression on `pciBusID` and, for
+  a partition, on the device name.
+- The pod pins the node with a node selector on the hostname, never with
+  `spec.nodeName`.
+- `spurd` waits for the claim to be allocated and the pod to be
+  scheduled. Then it installs the cgroup filter and launches the job.
+- If the scheduler cannot allocate the claim, a pod won the GPU in the
+  window. `spurd` deletes the placeholder and answers the launch with the
+  existing resources-unavailable reply. The job requeues. Kubernetes is
+  never the loser.
+- When the job ends, `spurd` deletes the placeholder. The pod's owner
+  reference and a label let a cleanup pass remove orphans.
+
+Spur's placement on a shared node is provisional until the placeholder is
+scheduled.
+
+### 4.4 Kubernetes to Spur: holds
+
+`spurd` watches its own node's `ResourceClaim`s and `ResourceSlice`. Each
+GPU that a claim of a non-placeholder pod names is a hold. `spurd`
+reports holds to `spurctld` when they change, not on a timer. A hold
+carries the inventory `generation` of PR 898, so the controller drops a
+hold that belongs to a stale inventory.
+
+- The scheduler treats a held GPU as allocated. Backfill treats it as
+  unavailable for the whole planning window, because a pod has no end
+  time.
+- Holds live in the leader's memory, not in the Raft log. Every `spurd`
+  re-reports on leader change and on its own restart. A shared node is
+  unplaceable until its first report, with a pending reason that names
+  the window. Pending (grill Q13).
+- On restart `spurd` rebuilds holds from the claims and, as a cross
+  check, from the kubelet Pod Resources API, which returns DRA devices
+  as driver, pool and device name.
+
+### 4.5 Where the Kubernetes client lives
+
+`spurd` gets a Kubernetes client, `spurctld` does not. `spurd` already
+mints an admin kubeconfig for the managed k0s. The translation from
+Spur's device identity to the DRA device name is node-local: PR 898's
+`stable_id` decodes to bus:dev.func, discovery adds the domain, and for
+a partition the render minor gives `gpu-<card>-<renderD>`. Pending (grill
+Q12).
+
+### 4.6 Identity
+
+PR ROCm/spur#898 (open, changes requested 2026-09-23, fix pushed) makes
+`GpuResource.stable_id` a `uint32` that encodes
+`(bus << 16) | (dev << 11) | (func << 8) | partition_index`. The PCI
+domain is not encoded. A comment on the PR asks whether the intent is
+"domain 0000 only" or where the domain goes. Until that is answered,
+`spurd` assumes domain 0000 for the decode and keeps the full address from
+discovery beside it.
+
+### 4.7 Opt-in
+
+A flag on `spur k8s up` marks a node as shared at enrolment, and `spur
+update node` toggles it later. The flag persists beside the k0s role in
+the Raft log with `#[serde(default)]`. Kubernetes needs no signal, because
+the DRA driver publishes every GPU regardless.
+
+### 4.8 Scope rules on a shared node
+
+- Holds cover GPUs only. CPU and memory can be oversubscribed by the two
+  sides. Documented limitation.
+- Advance reservations are not allowed on a shared node. Creation fails
+  with a clear error.
+- The partition mode is fixed while a node is shared. The unit is one KFD
+  device.
+- One Spur agent per node. The `spur-k8s` operator mode does not also
+  register the node.
 
 ## 5. Work packages
 
-In dependency order. Each package is one or more PRs.
+In dependency order. Each package is one or more PRs. WP1 and WP2 run in
+parallel; WP3 and WP4 depend on both.
 
-### WP1 Stable device identity
+### WP1 Identity, on top of PR 898
 
-- Append `pci_bdf` and `render_minor` to `GpuResource` in `proto/slurm.proto`
-  with new tags. `spurd` fills them from `discovery.rs`, which already computes
-  the BDF. Compatible: a new field, no renumbering.
-- Carry the BDF through `ResourceSet` into the controller's `NodeAllocation`.
-  Show it in `spur show node`.
-- Test: unit test of the BDF mapping; a proto round-trip test with an old
-  message that lacks the field.
+- Rebase on PR 898 when it lands. Do not branch from it now.
+- Keep the full PCI address on `DeviceEntry` and add the render minor to
+  what `spurd` keeps per device, so the DRA name can be built. Whether the
+  domain enters the proto depends on the answer on PR 898.
+- Test: unit test of `stable_id` to DRA name for an SPX node and a CPX
+  node; a fixture from a real MI300X `ResourceSlice`.
 
-### WP2 Live resource updates from the node
+### WP2 Shared-node opt-in
 
-Upstream issue ROCm/spur#800. The heartbeat carries no resources, so a hold
-change cannot reach the controller.
+- Flag on `spur k8s up` and a `spur update node` toggle, persisted beside
+  the k0s role. `NodePlacement::matches()` keeps a shared node eligible.
+  The pending-reason classifier reports resources, not `K8sReserved`, for
+  such a node.
+- Show the flag in `spur show node` and `sinfo`.
+- Docs: `docs/deployment/managed-kubernetes.rst`, the configuration
+  reference, and a new page on GPU sharing.
+- Test: unit tests of the placement rule; the e2e `test_k8s_scheduling.py`
+  gets a case in which a job runs on a shared node with no pods.
 
-- Add an optional resource delta to the heartbeat: held device IDs, released
-  device IDs, and an inventory version.
-- `spurctld` applies the delta with a new WAL operation, `NodeDeviceHold`,
-  with `#[serde(default)]` on every new field.
-- Test: replay of an old Raft log without the operation; a hold that makes a
-  pending job wait; a release that lets it run.
+### WP3 spurd Kubernetes client and holds
 
-### WP3 Dual-use opt-in
+- New module in `spurd`, active only on a shared node. `kube` client from
+  the admin kubeconfig.
+- Watch the node's `ResourceClaim`s and `ResourceSlice`. Build the hold
+  set. Report on change over the agent protocol: a new optional field on
+  the heartbeat or a dedicated RPC, decided in grill round 3. The report
+  carries the inventory generation.
+- `spurctld` keeps holds per node in the leader's memory. The scheduler
+  and backfill treat a held GPU as allocated with no end time.
+- Restart: rebuild from claims, cross check with the Pod Resources API.
+- Test: a fake API server in unit tests; a controller test in which a
+  hold makes a pending job wait and a release lets it run; a leader
+  change that clears holds and a re-report that restores them.
 
-- New config field `[cluster] dual_use = false`. When true, a node with a
-  `k0s_role` stays eligible in `NodePlacement::matches()`. The pending-reason
-  classifier reports `Resources`, not `K8sReserved`, for such a node.
-- Per-node override with a node label, for clusters where only some nodes are
-  dual-use.
-- Docs: `docs/deployment/managed-kubernetes.rst`, the configuration reference,
-  and a new page on GPU sharing.
-- Test: the e2e `test_k8s_scheduling.py` gets a dual-use case in which a job
-  runs on an enrolled node.
+### WP4 Placeholder pod at launch
 
-### WP4 spurd as device driver
+- Before launch on a shared node, create the placeholder pod and claim,
+  wait for scheduling, then launch. On failure delete the placeholder and
+  reply resources-unavailable.
+- Delete the placeholder on job end. Cleanup pass for orphans.
+- Failure cases: an administrator deletes a placeholder while its job
+  runs; the API server is unreachable; a claim is allocated but the pod
+  never starts. Policies decided in grill round 3.
+- Test: unit tests with a fake API server; an e2e on a Kaytoo VM cluster
+  with one pod that uses a `ResourceClaim` and one Spur job on the same
+  node, reading the GPU each one got.
 
-- New module in `spurd`, active only when `dual_use` is on and the node has a
-  k0s worker or single role.
-- DRA kubelet plugin: registration on the kubelet plugin socket, a
-  `ResourceSlice` per node with one device per free GPU and the attributes
-  BDF, product, VRAM, partition, XGMI peers. `NodePrepareResources` records
-  the hold and answers with the CDI device name from the spec `spurd` already
-  writes to `/etc/cdi/amd.json`. `NodeUnprepareResources` releases the hold.
-- Withdraw-before-launch in the executor: taint the job's devices
-  `NoSchedule`, confirm, then install the cgroup filter.
-- Restart: rebuild the hold table from the kubelet's checkpoint and the
-  controller's allocation.
-- Fallback: a device plugin API variant with the same hold table, if DRA is
-  not available.
-- Test: a fake kubelet gRPC peer in the unit tests; an e2e on a Kaytoo VM
-  cluster that runs one AIM pod and one Spur job on the same node and reads
-  the GPU each one got.
+### WP5 Visibility
 
-### WP5 Placeholder scheduling for pods
-
-- `spurctld` serves the scheduler-extender endpoints, gated by a config flag.
-  Filter maps the pod to a placeholder job spec and answers with the nodes
-  Spur allows. Bind waits for the allocation and binds the pod. A watch on
-  pod deletion cancels the placeholder. A preempted placeholder evicts its
-  pod.
-- k0s configuration: Spur renders the `KubeSchedulerConfiguration` with the
-  extender and the profile name `spur`.
-- Accounting: the placeholder runs under the account of the namespace and
-  counts in fair-share and TRES usage.
-- Test: unit tests of the pod-to-job mapping; an e2e in which a pod with
-  `schedulerName: spur` pends while a higher-priority Spur job holds the GPUs
-  and runs after it ends.
+- `spur show node` and `sinfo` GRES columns show free, Spur-allocated and
+  held, with the pod name for a held GPU.
+- On Kubernetes the placeholder pod and its claim show the Spur job id,
+  user and account as labels.
+- Test: golden output tests for both commands.
 
 ### WP6 cluster-forge and byok
 
-- `amd-gpu-operator-config`: on dual-use nodes set
-  `devicePlugin.enableDevicePlugin: false`, keep `enableNodeLabeller: true`
-  and the metrics exporter. If the operator's own DRA driver is installed,
-  turn it off on those nodes; the operator enforces one driver per node.
-- A Kyverno mutate policy that sets `schedulerName: spur` on pods in the AIM
-  namespaces, for the case in which the AIM CRDs do not pass the field
-  through. Kyverno is already in the `default` profile.
-- A byok capability `gpu.spur-arbitration` with a probe that reads the
-  `ResourceSlice` of a node.
-- Docs in `byok/docs`.
+- Raise the AMD GPU operator pin from 1.4.1 to 1.5.1. Pin the DRA driver
+  image tag; the operator default is `latest`.
+- Two `DeviceConfig`s: device plugin on ordinary nodes, DRA driver on
+  shared nodes, disjoint node selectors.
+- A byok capability `gpu.spur-sharing` with a probe that reads the
+  `ResourceSlice` of a shared node.
+- Docs in `byok/docs`: shared-node pods need a `ResourceClaim` until the
+  DRA driver release with `extendedResourceName`.
 
 ### WP7 Upstream housekeeping
 
-- File the follow-up issue that PR ROCm/spur#558 promised, with this plan as
-  the design.
-- Propose a roadmap entry between 11.3 and 11.4, "Dual-use nodes: spurd as
-  the kubelet device driver", and a note on 11.2 that it covers clusters where
-  Spur executes the pods itself.
-- Ask upstream to reserve the plugin name `inference`, or add a CI check in
-  cluster-forge that `spur inference` is not a built-in command.
+- Done 2026-09-23: comment on PR 898 about the PCI domain.
+- File the follow-up issue that PR 558 promised, with this plan as the
+  design. Problem statement only, no prescribed fix.
+- Propose a roadmap entry between 11.3 and 11.4, "Shared nodes: GPU-level
+  sharing with a Kubernetes DRA driver", and a note on 11.2 that it covers
+  clusters where Spur executes the pods itself.
 
 ## 6. Risks and open points
 
-- k0s version. DRA core is GA in Kubernetes 1.34. Device taints and
-  extended-resource mapping are stable in 1.37 and beta before. Spur pins k0s
-  v1.36.2 and controls the pin. Confirm which feature gates are on by default
-  in the pinned version before WP4 starts.
-- Compute partitions. In CPX mode one GPU is 8 devices that share the BDF. The
-  device key must include the partition index. Spur reads the mode, the DRA
-  driver publishes `amdgpu-partition` devices.
-- Preemption of pods. `NoExecute` evicts a pod at once. Check KServe's restart
-  behaviour and the cache volume of an AIM before the default policy is set.
-- Backfill. A GPU that a pod holds has no end time. Backfill must treat it as
-  unavailable for the whole planning window.
-- Reservations. An advance reservation must withdraw its GPUs from the kubelet
-  before its start time, or a pod can take them.
-- Scheduling latency. The placeholder path adds Spur's scheduler interval, 2
-  seconds by default, to each pod start. Acceptable for an inference replica,
-  not for a pod that starts every second.
-- Node identity. On a dual-use node the native `spurd` is the only Spur agent.
-  The `spur-k8s` operator mode must not also register the node.
+- PR 898 is not merged. Its identity encoding may still change. WP1 waits;
+  WP2 to WP4 do not depend on the encoding, only on the decode helper.
+- No released AMD DRA driver maps `amd.com/gpu`. Shared nodes are usable
+  by pods with a `ResourceClaim` only. The feature is announced after the
+  driver release.
+- The gpu-operator DRA image defaults to `latest`. Pin it.
+- CPX order. PR 898 ranks partitions by render minor inside a BDF group;
+  the DRA driver names them by card and render index. Confirm on a CPX
+  node that both orders agree before WP1 closes.
+- Scheduling latency. The placeholder adds one kube-scheduler round trip
+  to each Spur job launch on a shared node.
+- CPU and memory oversubscription on a shared node is not prevented.
+- Grill round 3 is open: placeholder namespace and naming, hold report
+  path, loser-path timing, failure policies.
 
 ## 7. Out of scope
 
-- Time-sharing one GPU between a pod and a Spur job. Nothing on AMD enforces
-  it; KFD lets both processes open the device with no VRAM or compute share.
+- One queue for pods and jobs: `schedulerName`, a scheduler extender, and
+  placeholder jobs for pods. Removed from this plan, see section 8.
+- Eviction in either direction.
+- Time-sharing one GPU between a pod and a Spur job.
 - Roadmap items 11.2, 11.4, 11.5 and 13.x.
-- A change in aim-engine or KServe.
+- A change in aim-engine, KServe, the AMD GPU operator or the AMD drivers.
+
+## 8. Changes from the 2026-09-18 revision
+
+| Was | Now | Why |
+|---|---|---|
+| Layer 1: `spurd` replaces the AMD driver as the kubelet's device driver | Kubernetes allocation is the ledger; `spurd` writes placeholders and reads holds | Decision: no fork, patch or replacement of AMD's driver. A Spur driver would be a fork to keep in step with ROCm releases. |
+| Layer 2: Spur places the pods through `schedulerName: spur` and an extender | Out of scope | Decision: both sides keep their own queue. Goal is visibility and no over-allocation. |
+| DRA target, device plugin fallback | DRA only, documented requirement | The device plugin names the device only after the pod starts. |
+| Device taints hide and evict | Rejected | Documented race with no signal to wait for; no eviction. |
+| WP1 adds `pci_bdf` and `render_minor` to the proto | PR 898 adds `stable_id` with the BDF encoded; domain open | Upstream moved first. |
+| WP2 adds a `NodeDeviceHold` WAL operation | Holds in leader memory, re-reported | Kubernetes is the ledger; a Raft copy is a second truth. |
+| WP3 `[cluster] dual_use` config field plus node label | Per-node flag on `spur k8s up` and `spur update node` | Per node, no restart, persisted with the role. |
+| WP6 turns the device plugin off and adds a Kyverno policy for `schedulerName` | Operator 1.5.1, two `DeviceConfig`s, no Kyverno | DRA on shared nodes only; no scheduler name. |
+| Reservations withdraw GPUs before start | Reservations not allowed on shared nodes | A reservation without a guarantee is not a reservation. |
