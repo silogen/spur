@@ -407,8 +407,9 @@ branches.
   the merged PR.
 - Done 2026-09-24: issue 920 on the CPX `location_id` decode, measured on
   an MI300X, https://github.com/ROCm/spur/issues/920.
-- After this revision is pushed: the PR 558 follow-up issue and the
-  roadmap entry (section 7), each posted only with explicit permission.
+- Done 2026-09-24: the PR 558 follow-up issue,
+  https://github.com/ROCm/spur/issues/923.
+- The roadmap entry (section 7) is posted only with explicit permission.
 
 ## 6. Risks and open points
 
@@ -444,11 +445,10 @@ Not part of this plan. Each item has an owner or a trigger.
 - When a DRA driver release ships `extendedResourceName` (merged to
   `develop` 2026-08-03): pods that request `amd.com/gpu` land on shared
   nodes without a claim. Re-check the byok docs and the aim-engine item.
-- File the follow-up issue that PR 558 promised, with this plan as the
-  design. Problem statement only, no prescribed fix. Propose a roadmap
-  entry between 11.3 and 11.4, "Shared nodes: GPU-level sharing with a
+- The follow-up issue that PR 558 promised is filed as issue 923.
+  Propose a roadmap entry between 11.3 and 11.4, "Shared nodes: GPU-level sharing with a
   Kubernetes DRA driver", and a note on 11.2 that it covers clusters where
-  Spur executes the pods itself. Both only with explicit permission.
+  Spur executes the pods itself. Only with explicit permission.
 - GPU accounting for fair-share (upstream issue 439) can read the same
   per-device state once holds exist.
 
