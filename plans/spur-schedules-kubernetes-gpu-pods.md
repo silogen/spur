@@ -370,6 +370,14 @@ parallel; WP3 and WP4 depend on both; WP5 to WP8 follow.
 
 ### WP7 cluster-forge and byok
 
+Prerequisite: byok is not on cluster-forge main. It is PR 836 on branch
+`EAI-8560-byok`, and it must be installed from that branch. That byok
+needs a Spur built from the `feat/cli-plugins` branch (worktree
+`git-worktrees/spur-plugins`, pushed to the silogen fork), because the
+`spur-aims` plugin uses the `spur <name>` plugin mechanism that main does
+not have yet. Any test of WP7 on a real cluster starts from those two
+branches.
+
 - Raise the AMD GPU operator pin from 1.4.1 to 1.5.1. Pin the DRA driver
   image tag.
 - Two `DeviceConfig`s: device plugin on ordinary nodes, DRA driver on
@@ -388,7 +396,8 @@ parallel; WP3 and WP4 depend on both; WP5 to WP8 follow.
   `ResourceSlice`.
 - GPU test behind a pytest marker, run manually: one pod with a
   `ResourceClaim` and one Spur job on the same shared node, reading the
-  GPU each one got; the CPX `card_id` lookup check. The host is created by
+  GPU each one got; the CPX `card_id` lookup check. On the byok path the
+  cluster comes from the two branches named in WP7. The host is created by
   the user before testing and named then. Nothing runs on any GPU node
   without the user's explicit permission.
 
