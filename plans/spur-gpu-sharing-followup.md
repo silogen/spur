@@ -85,8 +85,9 @@ VM with a virtio-gpu display the version is `1`, and the API server rejects
 every `ResourceSlice`. This is upstream issue ROCm/k8s-gpu-dra-driver#56, with
 the open fix PR #117. A draft comment with our reproduction is in
 `/home/prepo/dev/silo/spur/plans/upstream-draft-dra-driver-issue-56-comment.md`.
-Post it only with the user's permission, and use the skill `oss-contribution`
-before you post.
+The comment was posted on 2026-09-24:
+https://github.com/ROCm/k8s-gpu-dra-driver/issues/56#issuecomment-5818800070.
+Watch #56 and #117 for replies. Ask the user before you post again.
 
 ## Open points that need no decision
 
