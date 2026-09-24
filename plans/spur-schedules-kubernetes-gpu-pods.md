@@ -161,13 +161,15 @@ Q12).
 
 ### 4.6 Identity
 
-PR ROCm/spur#898 (open, changes requested 2026-09-23, fix pushed) makes
-`GpuResource.stable_id` a `uint32` that encodes
-`(bus << 16) | (dev << 11) | (func << 8) | partition_index`. The PCI
-domain is not encoded. A comment on the PR asks whether the intent is
-"domain 0000 only" or where the domain goes. Until that is answered,
-`spurd` assumes domain 0000 for the decode and keeps the full address from
-discovery beside it.
+PR 898 is merged as `0b19a99`; `GpuResource.stable_id` is a `u64` with the
+PCI domain in bits 24..39. The sharing code never decodes it. The DRA
+device name is `gpu-<card_id>-<render_minor>`, both values `spurd` already
+reads; a GPU with no `card_id` is unshareable. The claim selector uses
+the BDF from one helper that masks the PCI function to 0 for a partitioned
+device, as the DRA driver does, because the kernel ORs the partition
+`node_id` into the function bits (issue 920). After the upstream fix the
+helper collapses to `bdf_from_location_id`; the unit test with the values
+measured in issue 920 stays as the guard.
 
 ### 4.7 Opt-in
 
@@ -259,43 +261,74 @@ parallel; WP3 and WP4 depend on both.
   `ResourceSlice` of a shared node.
 - Docs in `byok/docs`: shared-node pods need a `ResourceClaim` until the
   DRA driver release with `extendedResourceName`.
+- The operator's DRA DaemonSet hard-codes `/var/lib/kubelet`; it works on
+  k0s through the symlink `spurd` creates on shared nodes (WP2). The
+  driver's own Helm chart is the alternative; it takes the k0s paths as
+  values.
 
 ### WP7 Upstream housekeeping
 
 - Done 2026-09-23: comment on PR 898 about the PCI domain.
-- File the follow-up issue that PR 558 promised, with this plan as the
-  design. Problem statement only, no prescribed fix.
-- Propose a roadmap entry between 11.3 and 11.4, "Shared nodes: GPU-level
-  sharing with a Kubernetes DRA driver", and a note on 11.2 that it covers
-  clusters where Spur executes the pods itself.
+- Done 2026-09-24: issue 920 on the CPX `location_id` decode, measured on
+  an MI300X, https://github.com/ROCm/spur/issues/920.
+- The PR 558 follow-up issue and the roadmap entry are in section 7.
 
 ## 6. Risks and open points
 
-- PR 898 is not merged. Its identity encoding may still change. WP1 waits;
-  WP2 to WP4 do not depend on the encoding, only on the decode helper.
+- PR 898 is merged as `0b19a99`. Issue 920 shows its BDF decode is wrong
+  for CPX partitions; this plan does not depend on it (section 4.6).
 - No released AMD DRA driver maps `amd.com/gpu`. Shared nodes are usable
   by pods with a `ResourceClaim` only. The feature is announced after the
   driver release.
 - The gpu-operator DRA image defaults to `latest`. Pin it.
-- CPX order. PR 898 ranks partitions by render minor inside a BDF group;
-  the DRA driver names them by card and render index. Confirm on a CPX
-  node that both orders agree before WP1 closes.
+- CPX card lookup. `spurd` resolves `card_id` through
+  `/sys/class/drm/card*/device/drm`; confirm on the CPX host of issue 920
+  that an `amdgpu_xcp` partition resolves, or the partition is unshareable.
 - Scheduling latency. The placeholder adds one kube-scheduler round trip
   to each Spur job launch on a shared node.
 - CPU and memory oversubscription on a shared node is not prevented.
-- Grill round 3 is open: placeholder namespace and naming, hold report
-  path, loser-path timing, failure policies.
+- Grill round 3 is closed; round 4 (proto field for substituted devices,
+  hold report content, claim shape, e2e host) is open in
+  `plans/spur-k8s-gpu-sharing-grill.md`.
 
-## 7. Out of scope
+## 7. Future work
+
+Not part of this plan. Each item has an owner or a trigger.
+
+- aim-engine `ResourceClaim` support, a separate Silo project with its own
+  ticket: `spec.resourceClaims` with a `ResourceClaimTemplate` on
+  `gpu.amd.com`, `resources.claims` instead of the `amd.com/gpu` extended
+  resource, node capacity read from `ResourceSlice`s. Until then AIM pods
+  do not land on shared nodes.
+- An upstream PR to `ROCm/gpu-operator` that adds the kubelet registrar
+  and plugins directories to `DRADriverSpec`, with the device plugin's
+  `kubeletSocketPath` as the precedent. It removes the need for the
+  `/var/lib/kubelet` symlink on the operator path. Consider after the
+  feature works.
+- After issue 920 is fixed upstream: collapse the selector-BDF helper to
+  `bdf_from_location_id` and keep the unit test with the measured values.
+- When a DRA driver release ships `extendedResourceName` (merged to
+  `develop` 2026-08-03): pods that request `amd.com/gpu` land on shared
+  nodes without a claim. Re-check the byok docs and the aim-engine item.
+- File the follow-up issue that PR 558 promised, with this plan as the
+  design. Problem statement only, no prescribed fix. Propose a roadmap
+  entry between 11.3 and 11.4, "Shared nodes: GPU-level sharing with a
+  Kubernetes DRA driver", and a note on 11.2 that it covers clusters where
+  Spur executes the pods itself.
+- GPU accounting for fair-share (upstream issue 439) can read the same
+  per-device state once holds exist.
+
+## 8. Out of scope
 
 - One queue for pods and jobs: `schedulerName`, a scheduler extender, and
-  placeholder jobs for pods. Removed from this plan, see section 8.
+  placeholder jobs for pods. Removed from this plan, see section 9.
 - Eviction in either direction.
 - Time-sharing one GPU between a pod and a Spur job.
 - Roadmap items 11.2, 11.4, 11.5 and 13.x.
-- A change in aim-engine, KServe, the AMD GPU operator or the AMD drivers.
+- A required change in aim-engine, KServe, the AMD GPU operator or the AMD
+  drivers. Optional upstream contributions are listed in section 7.
 
-## 8. Changes from the 2026-09-18 revision
+## 9. Changes from the 2026-09-18 revision
 
 | Was | Now | Why |
 |---|---|---|
