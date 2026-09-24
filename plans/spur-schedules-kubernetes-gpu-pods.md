@@ -1,6 +1,6 @@
 # Plan: Spur and Kubernetes share the GPUs of one node
 
-Date 2026-09-24, revision 3, with the implementation status in section 10. Replaces the revision of 2026-09-23. Based on
+Date 2026-09-24, revision 3, with the implementation status in section 10 (updated in the evening). Replaces the revision of 2026-09-23. Based on
 `spur` main at `0b19a99`, cluster-forge worktree `EAI-8560-byok`, the
 research in `plans/spur-k8s-gpu-coscheduling.md` and the decisions in
 `plans/spur-k8s-gpu-sharing-grill.md`, rounds 1 to 5. Every decision in
@@ -479,153 +479,128 @@ Not part of this plan. Each item has an owner or a trigger.
 | e2e on Kaytoo with a GPU | Kaytoo covers the non-GPU paths; the GPU test runs manually on a host the user provides | Kaytoo VMs have no GPU. |
 | WP7 files the PR 558 issue | Future work, after this revision, with explicit permission | The user decides what is posted upstream. |
 
-## 10. Implementation status (2026-09-24)
+## 10. Implementation status (2026-09-24, evening)
 
-Work is paused. This section tells the next agent what is done, what
-changed from sections 4 and 5, and what to do next. All work is local.
-Nothing is pushed and no PR exists. The user decides about PRs.
+Steps 1 to 5 of the old list are done, and step 6 is done for SPX. This
+section tells the next agent what is done, what changed from sections 4 and
+5, and what to do next. All work is local. Nothing is pushed and no PR
+exists. The user decides about PRs.
 
 ### 10.1 Where the work is
 
 | Item | Location |
 |---|---|
-| Spur integration branch | `feat/gpu-sharing` in `/home/prepo/dev/silo/git-worktrees/spur-gpu-sharing`, based on `origin/main` `1d17654` |
+| Spur integration branch | `feat/gpu-sharing` in `/home/prepo/dev/silo/git-worktrees/spur-gpu-sharing`, based on `origin/main` `1d17654`, head `332d7c1` |
 | Contract and lead decisions for sub-agents | `/home/prepo/dev/silo/git-worktrees/gs-common.md` |
-| Empty branches for the next two steps | `gs-cred` in `git-worktrees/spur-gs-cred`, `gs-wire` in `git-worktrees/spur-gs-wire`, both at the integration head `64b1f72` |
-| Merged agent branches, can be removed | `gs-ctl`, `gs-spurd`, `gs-place`, `gs-cli` and their worktrees `git-worktrees/spur-gs-*` |
+| Merged agent branches, can be removed | `gs-ctl`, `gs-spurd`, `gs-place`, `gs-cli`, `gs-cred`, `gs-wire` and their worktrees `git-worktrees/spur-gs-*` |
+| Backup of the branch before the reword of step 4 | `refs/original/refs/heads/feat/gpu-sharing` (`f96eb6b`), can be removed |
 | WP7 cluster-forge | branch `EAI-8560-byok-gpu-sharing` in `/home/prepo/dev/silo/git-worktrees/cluster-forge-gpu-sharing`, based on `origin/EAI-8560-byok`, 4 commits |
-| itg1 change log | `/home/prepo/dev/silo/spur/plans/itg1-cleanup-log.md` |
-| Captured ResourceSlice (MI300X, SPX) | `crates/spur-devices/tests/fixtures/resourceslice-mi300x-spx.json` on `feat/gpu-sharing` |
+| e2e tests | `tests/native_host/e2e/test_gpu_sharing.py` (3 nodes, no GPU), `tests/native_host/e2e/test_gpu_sharing_gpu.py` (1 GPU node, marker `gpu`) |
+| GPU host change log | `/home/prepo/dev/silo/spur/plans/do-mi325x-change-log.md` (host `root@107.170.49.109`) |
+| itg1 change log | `/home/prepo/dev/silo/spur/plans/itg1-cleanup-log.md`. Do not use itg1. |
+| Captured ResourceSlice (MI300X, SPX) | `crates/spur-devices/tests/fixtures/resourceslice-mi300x-spx.json` |
 
-The integration branch builds, and `cargo clippy --workspace --exclude
-spur-ffi --all-targets --locked -- -D warnings` is clean. Each agent ran
-the tests of its crates and they passed. A full `cargo test --locked` on
-the merged branch was not run yet.
+On the head `332d7c1`: `cargo fmt --all --check` is clean, `cargo clippy
+--workspace --exclude spur-ffi --all-targets --locked -- -D warnings` is
+clean, and `cargo test --locked` passes (4481 tests in 40 binaries). One
+PTY test in `spur-cli` (`interactive_pty_retries_past_a_hung_reconnect_attempt`)
+failed once under load and passed alone. The file is not changed by this work.
 
 ### 10.2 Status per work package
 
 | WP | Status |
 |---|---|
-| WP1 Identity | Done. `SharingIdentity` in `spur-devices` (`discover_sharing_identities`, `dra_device_name`, selector BDF with the function set to 0 for a partitioned device). Tests: SPX, CPX with the issue 920 values, the captured slice, a synthetic CPX slice. |
-| WP2 Opt-in | Done except the worker credential (10.4, step 1). Controller: `Node.gpu_sharing`, `WalOperation::NodeGpuSharingSet`, `update_node`, `cluster_up`/`cluster_add_nodes` flags, reservation checks. spurd: kubelet links, node label, `ResourceSlice` check. CLI: `spur k8s up --gpu-sharing-nodes`, `spur k8s add-nodes --gpu-sharing`, `spur node gpu-sharing <nodes> on|off`, `scontrol update NodeName=<n> GpuSharing=yes|no`. |
-| WP3 Holds | Done except the worker credential. spurd watches claims and the slice, reports `GpuHoldReport` on the heartbeat, sends one extra heartbeat on change. Controller keeps holds in leader memory, drops a wrong generation, holds all GPUs of a shared node without a fresh report, reserves held GPUs to the far future in backfill. |
-| WP4 Placeholder | Core module done (`crates/spurd/src/gpu_sharing/placeholder.rs`). Controller accepts `LaunchJobResponse.substituted_alloc`. Not wired into the launch path (10.4, step 2). |
-| WP5 Visibility | Done. `scontrol show node` shows `GpuSharing=` and one line per GPU. REST `node_to_json` has `gpu_sharing`. |
-| WP6 Docs | Done: `docs/deployment/gpu-sharing.rst`, `managed-kubernetes.rst`, configuration and monitoring pages. Update after steps 1 and 2. |
-| WP7 cluster-forge | Done, local. gpu-operator 1.5.1 on all paths, remediation off, a second `DeviceConfig` for the DRA driver behind `gpuSharing.enabled` (default false), capability `gpu.spur-sharing`, `byok/docs/spur-gpu-sharing.md`. |
-| WP8 e2e | Not started. |
+| WP1 Identity | Done. |
+| WP2 Opt-in | Done, with the worker credential. |
+| WP3 Holds | Done, with the worker credential. |
+| WP4 Placeholder | Done. Launch wiring, release on failure and teardown, a 30 s check loop for orphans and presence, CPX substitution. |
+| WP5 Visibility | Done. A job on a conflicting GPU does not get a comment (see 10.5). |
+| WP6 Docs | Done: `gpu-sharing.rst` also covers the credential, the placeholder deadline, the CDI rule and the DRA driver version bug. |
+| WP7 cluster-forge | Done, local. No change in this round. |
+| WP8 e2e | Done on Kaytoo (3 VMs) and on one MI325X node in SPX. The CPX card lookup check is not done (10.4, step 1). |
 | WP9 | No change. |
 
 ### 10.3 Changes from sections 4 and 5
 
-These decisions replace the text above. Tests on itg1 (MI300X, SPX,
-k0s v1.36.2, DRA driver chart v1.0.1) confirmed the first two.
+These decisions replace the text above. Items from the first round stay:
 
-- Kubelet paths (4.7). On k0s the kubelet always makes a real directory
-  `/var/lib/kubelet/device-plugins/`. Thus Spur does not link all of
-  `/var/lib/kubelet`. It makes two links:
-  `/var/lib/kubelet/plugins_registry` to
-  `/var/lib/k0s/kubelet/plugins_registry` and `/var/lib/kubelet/plugins`
-  to `/var/lib/k0s/kubelet/plugins`. Each link is made only when the path
-  is absent or is already the Spur link. The DRA driver chart then works at
-  its default paths. `pod-resources` is not linked, so the metrics exporter
-  keeps its `podResourceAPISocketPath` override.
-- Verified on hardware: the device names are `gpu-<card>-<renderD>` (for
-  example `gpu-9-136` with `pciBusID` `0000:2f:00.0`); a claim with the CEL
-  selector on `pciBusID` gets that exact device; a second claim for the
-  same GPU gives `PodScheduled=False` with reason `Unschedulable` at once;
-  the pause image `quay.io/k0sproject/pause:3.10.2-0` is present in k0s.
-- Placeholder name (4.3). The name is
-  `spur-job-<jobid>-<run_attempt>-<node>`, because a job on many nodes
-  has one placeholder on each node. Added labels `spur.amd.com/node` and
-  `spur.amd.com/run-attempt`. A user or account name that is not a valid
-  label value is left out.
-- Node label (4.7). gpu-operator 1.5.1 selectors are equality-only, and a
-  node can belong to one `DeviceConfig` only. So spurd sets
-  `spur.amd.com/gpu-sharing=true` on a shared node and `=false` on every
-  other k0s-enrolled GPU node. It never removes the label while the node
-  is enrolled. After a label change the gpu-operator needs a restart.
-- Toggle command. There is no `spur update node`. The toggle is
-  `UpdateNodeRequest.gpu_sharing`, used by `spur node gpu-sharing` and
-  `scontrol update ... GpuSharing=`.
-- Freshness (4.4). With no fresh valid report, all GPUs of a shared node
-  are held. This makes the node GPU-unplaceable, but CPU-only jobs still
-  land on it.
-- Parent key for CPX substitution: `spur_core::resource::gpu_parent_key`,
-  which is `stable_id >> 11`.
-- Credential (4.5). The plan says `spurd` already mints an admin
-  kubeconfig. That is true only on a control-plane node: `k0s kubeconfig
-  admin` fails on a worker. Step 1 below fixes this.
+- Kubelet paths (4.7): two links, `/var/lib/kubelet/plugins_registry` and
+  `/var/lib/kubelet/plugins`, to the k0s paths. `pod-resources` is not linked.
+- Placeholder name (4.3): `spur-job-<jobid>-<run_attempt>-<node>`, with the
+  labels `spur.amd.com/node` and `spur.amd.com/run-attempt`.
+- Node label (4.7): `true` on a shared node, `false` on every other
+  k0s-enrolled GPU node. After a label change the gpu-operator needs a restart.
+- Toggle: `UpdateNodeRequest.gpu_sharing`, used by `spur node gpu-sharing`
+  and `scontrol update ... GpuSharing=`. There is no `spur update node`.
+- Freshness (4.4): with no fresh valid report, all GPUs of a shared node are
+  held. CPU-only jobs still land on the node.
+- Parent key for CPX substitution: `gpu_parent_key`, `stable_id >> 11`.
+
+New in this round:
+
+- Credential (4.5). A worker has no admin kubeconfig. The controller RPC
+  `GetGpuSharingKubeconfig {hostname, node_token}` authenticates the node
+  like `Heartbeat`, forwards to the leader, and allows a node with k0s role
+  Worker or Single and at least one GPU. The node does not have to be
+  shared, because a non-shared GPU node also writes its label. The
+  controller asks a control-plane `spurd` with the new field
+  `GetKubeconfigRequest.gpu_sharing_node` (tag 4). That `spurd` applies the
+  namespace `spur-system` (Pod Security `baseline`), the ServiceAccount
+  `spurd-gpu-sharing-<node>` and minimum RBAC, and returns a kubeconfig with
+  a 24 h bound token. The worker rebuilds its client after 12 h and on HTTP
+  401. A control-plane or Single node uses the local admin kubeconfig.
+- Launch deadline (4.3). The wire has no deadline from the controller. So
+  `spurd` reads `controller.dispatch_timeout_secs` from its own `spur.conf`,
+  and stops 10 s before it.
+- Placeholder checks run in their own 30 s loop, not in the 2 s monitor loop,
+  because a slow API call must not stop job reaping.
+- CDI (4.10). The statement "CDI does not collide" was wrong. The AMD DRA
+  driver writes one CDI spec for each allocated claim, and an env-only
+  `common` device, into `/var/run/cdi`. `spurd` read them as inventory: one
+  GPU more, and the GPU of the pod twice. The fix: the CDI cache skips each
+  kind whose vendor starts with `k8s.`, which is the DRA driver convention.
+- DRA driver v1.0.1 bug (found on the MI325X VM). The driver reads the
+  version of the first card in `/sys/class/drm`. On a VM whose `card0` is
+  virtio-gpu, the version is `1`, which is not semver, and the API server
+  refuses every `ResourceSlice`. The docs name the symptom and the work-around
+  `modprobe -r virtio_gpu`. An upstream issue to `ROCm/k8s-gpu-dra-driver`
+  is possible, only with the user's permission.
 
 ### 10.4 Next steps, in order
 
-1. Worker credential, in `spur-gs-cred`.
-   - Add a controller RPC `GetGpuSharingKubeconfig {hostname, node_token}`.
-     Authenticate it like `Heartbeat`, forward it to the leader, and
-     allow it only for a node with k0s role Worker or Single.
-   - Add a field `gpu_sharing_node` to `GetKubeconfigRequest`.
-   - The control-plane `spurd` applies the namespace `spur-system`, a
-     ServiceAccount `spurd-gpu-sharing-<node>` and minimum RBAC:
-     - cluster-wide `resourceclaims` and `resourceslices` get/list/watch;
-     - in `spur-system`, `resourceclaims` and `pods` create, get, list,
-       watch, delete and patch;
-     - `nodes` get/patch with `resourceNames: [<node>]`.
-   - Then it mints a bound token and returns the kubeconfig. Validate the
-     node name as a DNS-1123 label. Never log the token.
-   - `GpuSharing::client()` uses this path on a worker, keeps the local
-     admin kubeconfig on a control-plane node, and rebuilds the client on
-     HTTP 401 and every 12 hours.
-   - spurd writes `gpu-sharing=false` on every enrolled, non-shared GPU
-     node, without the watches.
-   - Update the docs.
-2. Launch wiring, in `spur-gs-wire`.
-   - In `agent_server.rs::launch_job`, only on a shared node, call
-     `placeholder::acquire` between `allocate_local_resources` and
-     `build_job_injection_plans`. Then call `map_allocation` with
-     `GpuSharing::identity`.
-   - Rebind the substituted devices under the allocation lock and set
-     `substituted_alloc`.
-   - Release the placeholder on a later launch failure and in the
-     `LaunchReservationGuard` drop path.
-   - Call `release` beside `release_job_if` in `release_stepd_tracking`.
-   - In the monitor loop, at a slower cadence, call `reconcile_orphans`
-     (live = running jobs plus launching reservations) and `ensure_present`.
-     Report a `Conflict` as CONFLICT.
-   - Replace the `live_placeholders()` stub in `gpu_sharing/mod.rs`, which
-     returns 0.
-   - `build_claim` must put `app.kubernetes.io/managed-by=spurd` and
-     `spur.amd.com/job-id` on the ResourceClaim, because `holds.rs` finds
-     Spur claims by these labels.
-3. Merge `gs-cred` and `gs-wire` into `feat/gpu-sharing`. Run `cargo fmt`,
-   the full clippy command and the full `cargo test --locked`.
-4. Reword the commit subjects. AGENTS.md wants a lowercase message after
-   the type (for example `feat(spurd): add ...`). Some commits start with
-   a capital letter. Rewrite the local history before any push.
-5. WP8 on Kaytoo VMs (no GPU). Use the skill `spur-kaytoo-cluster` for a
-   multi-node Spur cluster with `spur k8s up`. Add a test in
-   `tests/native_host/e2e/` (see `test_k8s_scheduling.py`) for:
-   - opt-in with no `ResourceSlice`, which gives an unshareable reason and
-     no GPU placement;
-   - the kubelet link and label lifecycle, including `=false` on
-     non-shared nodes;
-   - the credential RPC on a worker;
-   - placeholder cleanup with a fake `ResourceSlice`, applied with
-     `kubectl` and made to look like the captured fixture.
-6. GPU test (WP8, GPU part) and the CPX card lookup check. They need a GPU
-   host. itg1 was given back to the team on 2026-09-24 and must not be used
-   again without the user's permission. Ask the user for a host.
-7. Code review of the whole branch against this plan, then ask the user
-   about PRs. cluster-forge needs an EAI Jira ticket for its PR title.
+1. CPX card lookup check. The MI325X host is a DigitalOcean VM guest, and
+   its `amd-smi set` has no partition option, so it cannot go to CPX. Ask
+   the user for a bare-metal host where CPX is allowed. Then run
+   `test_gpu_sharing_gpu.py` in CPX (the first test compares every DRA name
+   with the slice). Restore SPX after the test.
+2. Decide the open security point in 10.5 (credential RPC in open admission).
+3. Code review of the whole branch against this plan (skill `code-review`).
+4. Ask the user about PRs. The Spur PR title needs the conventional form of
+   AGENTS.md. The cluster-forge PR needs an EAI Jira ticket.
+5. Remove the merged `gs-*` branches and worktrees, and the backup ref.
 
 ### 10.5 Open points found during the work
 
+- Security. In `admission.mode = open` (the default), `verify_node_identity`
+  accepts any caller. Any client that reaches port 6817 can then get the
+  credential of any GPU worker: pod create in `spur-system` (baseline Pod
+  Security) and patch on that Node. The docs warn about it. Option: refuse the
+  RPC unless the controller enforces node identity. Then GPU sharing on
+  workers needs token admission. The user decides.
+- RBAC objects of a node are not deleted when the node leaves k0s or opts out.
+- A job on a conflicting GPU gets no comment: there is no path from `spurd` to
+  the job comment.
+- After a `spurd` restart, placeholders of jobs that ran before the restart
+  are not checked for presence; only the orphan check covers them.
+- e2e teardown: `spur k8s down --reset` reports `phase: down` before `spurd`
+  has reset k0s. A fixture that kills the daemons at once leaves k0s running.
+  The same pattern is in the older k0s fixtures. Wait for the reset before
+  the kill.
 - If enrolment fails before a role is assigned, the flag is set but has no
-  effect (`Node::shares_gpus()` needs a role). The node still cannot join
-  a reservation.
-- Hold reports live only on the leader. A follower that answers
-  `get_node` itself shows no `gpu_holds`.
+  effect (`Node::shares_gpus()` needs a role).
+- Hold reports live only on the leader. A follower that answers `get_node`
+  itself shows no `gpu_holds`.
 - The claim watch is cluster-wide, because claims have no node field.
-- `placeholder::acquire` polls every 500 ms instead of watching (marked
-  `ponytail:`).
+- `placeholder::acquire` polls every 500 ms instead of a watch (`ponytail:`).
 - A node name longer than 63 characters cannot be a label value, so a
   placeholder on such a node fails.
