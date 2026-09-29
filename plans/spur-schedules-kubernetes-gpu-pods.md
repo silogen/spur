@@ -1,11 +1,14 @@
 # Plan: Spur and Kubernetes share the GPUs of one node
 
-Date 2026-09-24, revision 3, with the implementation status in section 10 (updated in the evening). Replaces the revision of 2026-09-23. Based on
-`spur` main at `0b19a99`, cluster-forge worktree `EAI-8560-byok`, the
-research in `plans/spur-k8s-gpu-coscheduling.md` and the decisions in
-`plans/spur-k8s-gpu-sharing-grill.md`, rounds 1 to 5. Every decision in
-this revision is confirmed; nothing is pending. Section 9 lists what
-changed since revision 2 and why.
+Date 2026-09-29, revision 4. Replaces revision 3 of 2026-09-24.
+This revision corrects the AMD DRA extended-resource requirements. The
+implementation status in section 10 remains a record of 2026-09-24; this
+update does not report new implementation or test results. Based on `spur`
+main at `0b19a99`, cluster-forge worktree `EAI-8560-byok`, the research in
+`plans/spur-k8s-gpu-coscheduling.md` and the decisions in
+`plans/spur-k8s-gpu-sharing-grill.md`, rounds 1 to 5. Section 9 records the
+revision history. The AIM/KServe path described in 4.2 still needs an
+end-to-end test. Other open points remain in section 10.5.
 
 ## 1. Requirement
 
@@ -19,9 +22,11 @@ same nodes. The requirement is:
 - Shared visibility. Both sides show, per GPU, who holds it.
 - No over-allocation. One GPU is never held by a Spur job and a pod at the
   same time.
-- No required change in aim-engine, KServe, the AMD GPU operator, the AMD
-  device plugin or the AMD DRA driver. No fork, no patch. Changes go to
-  Spur only. Optional upstream contributions are future work (section 7).
+- No required source-code change in aim-engine, KServe, the AMD GPU
+  operator, the AMD device plugin or the AMD DRA driver. No fork, no
+  patch. The Spur integration needs code changes; the installer needs
+  cluster configuration (section 4.10). Optional upstream contributions
+  are future work (section 7).
 
 Not required, decided out of scope: one queue for pods and jobs, and
 eviction in either direction. Both sides keep their own queue.
@@ -110,12 +115,40 @@ Facts that shape this:
   driver is rejected by the reconciler. Two `DeviceConfig`s with disjoint
   node selectors are accepted: device plugin on ordinary nodes, DRA on
   shared nodes.
-- The `amd.com/gpu` extended-resource mapping is only on the DRA driver's
-  `develop` branch, not in v1.0.1. Until a release ships it, pods on a
-  shared node must request a `ResourceClaim`. AIM pods request
-  `amd.com/gpu` today, so they land only on ordinary nodes. Spur's
-  implementation and e2e use a plain pod with a `ResourceClaim`;
-  aim-engine support is future work.
+- As checked on 2026-09-29, the latest official AMD GPU DRA Driver release
+  is v1.0.1, published on 2026-07-22. No official beta or prerelease is
+  listed. Development tags, such as `develop-36`, are not beta releases.
+- AMD PR 73, merged on 2026-08-03, adds
+  `DeviceClass.spec.extendedResourceName: amd.com/gpu` to the Helm
+  defaults. It changes no driver code. Its description states that an
+  administrator could already add the field manually. Thus v1.0.1 with
+  an explicitly configured DeviceClass is a test path supported by the
+  source review; a new driver binary is not a prerequisite for this mapping.
+- The mapping also needs Kubernetes `DRAExtendedResource`, not only base
+  DRA support. The current Kubernetes feature-gate reference lists it as
+  alpha and disabled by default in 1.34 and 1.35, beta and enabled by
+  default in 1.36, and stable from 1.37. Check the installed Kubernetes
+  version and component settings before a test.
+- With the mapping enabled, AIM/KServe can keep the existing
+  `resources.requests` and `resources.limits` entries for `amd.com/gpu`.
+  Kubernetes performs DRA allocation for those requests. AIM does not
+  need to author `spec.resourceClaims` or `resources.claims`; this does
+  not mean that Kubernetes uses no ResourceClaim internally.
+- Spur continues to use explicit claims for its placeholder pods. Both
+  paths must allocate from the same DRA device inventory. Without the
+  mapping, GPU pods on a DRA-only node need explicit claims; ordinary
+  `amd.com/gpu` requests do not provide this shared-node path.
+- Existing Spur tests use a plain pod with an explicit ResourceClaim.
+  AIM/KServe compatibility, including GPU discovery, node selection and
+  Spur hold reporting for Kubernetes-generated claims, is not yet tested
+  end to end. Do not report it as working until WP8 passes.
+
+Sources checked on 2026-09-29:
+
+- [AMD DRA releases](https://github.com/ROCm/k8s-gpu-dra-driver/releases).
+- [AMD PR 73: Helm extended-resource mapping](https://github.com/ROCm/k8s-gpu-dra-driver/pull/73).
+- [Kubernetes DRAExtendedResource feature gate](https://github.com/kubernetes/website/blob/main/content/en/docs/reference/command-line-tools-reference/feature-gates/DRAExtendedResource.md).
+- [Kubernetes extended-resource allocation by DRA](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#extended-resources-allocation-by-dra).
 
 ### 4.3 Spur to Kubernetes: the placeholder pod
 
@@ -283,6 +316,44 @@ node. Two supported ways:
   label, and the device-plugin `DeviceConfig` excluding shared nodes by
   selector.
 
+For AIM/KServe extended-resource requests, add these installer steps:
+
+1. Check the Kubernetes version and the effective `DRAExtendedResource`
+   settings (section 4.2). For 1.34 and 1.35, enable the gate on the
+   components that require it, using the documentation for that release.
+   Verify the settings on every relevant control-plane and worker node.
+2. Install the released AMD GPU DRA Driver v1.0.1 on shared nodes. Keep
+   the device plugin on ordinary nodes only. The shared nodes need a
+   loaded `amdgpu` kernel driver and a CDI-enabled container runtime.
+3. Manage this DeviceClass in the installer's GitOps configuration:
+
+   ```yaml
+   apiVersion: resource.k8s.io/v1
+   kind: DeviceClass
+   metadata:
+     name: gpu.amd.com
+   spec:
+     extendedResourceName: amd.com/gpu
+     selectors:
+       - cel:
+           expression: "device.driver == 'gpu.amd.com'"
+   ```
+
+   The v1.0.1 driver chart creates the same class without the mapping by
+   default. If GitOps manages the full object, set `deviceClass.create=false`
+   in the driver chart. For the operator chart, use
+   `draDriver.deviceClass.create=false`. One owner must manage the class;
+   a manual patch alone is not a persistent install configuration.
+4. Verify the ResourceSlices, the mapping and an unchanged `amd.com/gpu`
+   pod request before testing AIM/KServe. Keep the explicit-claim test as
+   a separate check of the Spur integration. See WP8 for acceptance.
+
+This mapping requires no development image or driver source change.
+The install path is based on source inspection, not a completed AIM test.
+See the [v1.0.1 chart defaults](https://github.com/ROCm/k8s-gpu-dra-driver/blob/v1.0.1/helm-charts-k8s/values.yaml),
+[DeviceClass template](https://github.com/ROCm/k8s-gpu-dra-driver/blob/v1.0.1/helm-charts-k8s/templates/deviceclass.yaml)
+and [operator DRA instructions](https://github.com/ROCm/gpu-operator/blob/v1.5.1/docs/dra/dra-driver.md).
+
 CDI does not collide: `spurd` writes kind `amd.com/gpu` into
 `/etc/cdi/amd.json`, the DRA driver writes kind `k8s.gpu.amd.com/gpu`
 into `/var/run/cdi`, and containerd 2.3.2 in k0s scans both.
@@ -363,8 +434,9 @@ parallel; WP3 and WP4 depend on both; WP5 to WP8 follow.
 
 - New page `docs/deployment/gpu-sharing.rst`: the contract, opt-in and
   opt-out, the installer's two ways (4.10), the placeholder and holds,
-  the limitations of 4.8, and the `ResourceClaim` requirement for pods
-  until the DRA driver ships `extendedResourceName`.
+  the limitations of 4.8, and the two pod request paths in 4.2. Include
+  the Kubernetes gate and DeviceClass configuration from 4.10. Distinguish
+  the tested explicit-claim path from the untested AIM/KServe path.
 - `docs/deployment/managed-kubernetes.rst` and the configuration
   reference for the new flag and the heartbeat field.
 
@@ -386,8 +458,11 @@ branches.
   `ResourceSlice` of a shared node.
 - The `podResourceAPISocketPath` override becomes unnecessary on shared
   nodes through the symlink; keep it for the others.
-- Docs in `byok/docs`: shared-node pods need a `ResourceClaim` until the
-  DRA driver release with `extendedResourceName`.
+- Configure the DeviceClass mapping and Kubernetes gate checks from 4.10.
+  Manage the class with one GitOps owner, separate from chart defaults.
+- Docs in `byok/docs`: describe unchanged `amd.com/gpu` requests through
+  DRA and the explicit-claim alternative. State the Kubernetes version
+  requirements and the AIM/KServe test status.
 
 ### WP8 e2e
 
@@ -400,6 +475,28 @@ branches.
   cluster comes from the two branches named in WP7. The host is created by
   the user before testing and named then. Nothing runs on any GPU node
   without the user's explicit permission.
+
+Additional acceptance checks for revision 4, not yet run:
+
+- Configuration: render the install manifests. Verify the pinned v1.0.1
+  image, disjoint device-plugin and DRA selectors, one DeviceClass owner,
+  and `extendedResourceName: amd.com/gpu`. A second reconcile must retain
+  the mapping. Verify the effective Kubernetes gate settings.
+- Plain pod: request `amd.com/gpu` without authored claims on a shared
+  node. Verify that Kubernetes allocates through DRA and that the pod can
+  use the allocated GPU. Record the generated claim and device identity.
+- AIM/KServe: deploy an AIM workload with its existing GPU request format.
+  Verify discovery, profile selection, placement on the shared node and
+  a successful inference request. No aim-engine or KServe source change.
+- Coexistence: run a native Spur job and the AIM workload concurrently on
+  different GPUs of the same node. Check the actual device identities,
+  Kubernetes claims and Spur holds. Repeat with each workload starting
+  first. When no GPU is free, an additional request must wait rather than
+  reuse an allocated device. On completion, both paths must release their
+  allocations and permit the waiting workload to run.
+- Run hardware checks only on a host explicitly approved by the user for
+  this task. Keep unrun checks marked as pending. If the unchanged AIM
+  path fails, report the failing stage before proposing source changes.
 
 ### WP9 Upstream housekeeping
 
@@ -415,9 +512,15 @@ branches.
 
 - Issue 920 is open. The selector BDF helper is the workaround; WP1 does
   not wait.
-- No released AMD DRA driver maps `amd.com/gpu`. Shared nodes are usable
-  by pods with a `ResourceClaim` only. The feature is announced after the
-  driver release.
+- The v1.0.1 Helm defaults omit the extended-resource mapping. Configure
+  the DeviceClass explicitly and verify the Kubernetes gate. Source
+  inspection supports this path, but WP8 must verify the complete
+  AIM/KServe flow and Spur holds before it is reported as working.
+- Base DRA support alone is insufficient. Kubernetes 1.34 and 1.35 need
+  explicit alpha feature enablement; 1.36 enables the beta by default.
+  Verify the installed release rather than infer support from the driver.
+- A chart reconciliation can remove a manually added mapping. Manage the
+  DeviceClass with one owner as described in 4.10.
 - The gpu-operator DRA image defaults to `latest`. Pin it.
 - CPX card lookup is not yet confirmed on hardware; WP8 covers it.
 - Scheduling latency. The placeholder adds one kube-scheduler round trip
@@ -430,11 +533,11 @@ branches.
 
 Not part of this plan. Each item has an owner or a trigger.
 
-- aim-engine `ResourceClaim` support, a separate Silo project with its own
-  ticket: `spec.resourceClaims` with a `ResourceClaimTemplate` on
-  `gpu.amd.com`, `resources.claims` instead of the `amd.com/gpu` extended
-  resource, node capacity read from `ResourceSlice`s. Until then AIM pods
-  do not land on shared nodes.
+- Native aim-engine ResourceClaim support is optional, not a prerequisite
+  for this plan. Consider a separate project only if explicit DRA requests
+  are needed beyond the extended-resource mapping, or if WP8 identifies
+  a requirement that cluster configuration cannot satisfy. Scope and
+  approve any aim-engine changes separately.
 - An upstream PR to `ROCm/gpu-operator` that adds the kubelet registrar
   and plugins directories to `DRADriverSpec`, with the device plugin's
   `kubeletSocketPath` as the precedent. It removes the need for the
@@ -442,9 +545,10 @@ Not part of this plan. Each item has an owner or a trigger.
   feature works.
 - After issue 920 is fixed upstream: collapse the selector-BDF helper to
   `bdf_from_location_id` and keep the unit test with the measured values.
-- When a DRA driver release ships `extendedResourceName` (merged to
-  `develop` 2026-08-03): pods that request `amd.com/gpu` land on shared
-  nodes without a claim. Re-check the byok docs and the aim-engine item.
+- When a released chart includes the mapping default from AMD PR 73,
+  review DeviceClass ownership before an upgrade. This is a configuration
+  maintenance step, not a prerequisite for unchanged AIM GPU requests.
+  No future release number or date is confirmed by this plan.
 - The follow-up issue that PR 558 promised is filed as issue 923.
   Propose a roadmap entry between 11.3 and 11.4, "Shared nodes: GPU-level sharing with a
   Kubernetes DRA driver", and a note on 11.2 that it covers clusters where
@@ -463,7 +567,24 @@ Not part of this plan. Each item has an owner or a trigger.
 - A required change in aim-engine, KServe, the AMD GPU operator or the AMD
   drivers. Optional upstream contributions are listed in section 7.
 
-## 9. Changes from the 2026-09-23 revision
+## 9. Revision history
+
+### Revision 4, 2026-09-29
+
+- Corrected the future-release requirement: AMD PR 73 changes Helm
+  defaults only. Test released driver v1.0.1 with an explicitly managed
+  DeviceClass mapping instead of waiting for a new binary.
+- Added Kubernetes version and feature-gate requirements, installer
+  configuration, source links and the official release status.
+- Kept AIM/KServe GPU requests unchanged. Native claim support in
+  aim-engine is optional future work.
+- Extended WP6, WP7 and WP8 with configuration, documentation and
+  acceptance checks. These additions are pending; the historical status
+  below does not mark them complete.
+- No cluster was changed, no hardware test was run and no existing
+  implementation status was reverified for this revision.
+
+### Revision 3, changes from 2026-09-23
 
 | Was | Now | Why |
 |---|---|---|
@@ -480,6 +601,12 @@ Not part of this plan. Each item has an owner or a trigger.
 | WP7 files the PR 558 issue | Future work, after this revision, with explicit permission | The user decides what is posted upstream. |
 
 ## 10. Implementation status (2026-09-24, evening)
+
+Historical record, not reverified on 2026-09-29. Revision 4 replaces the
+old release-wait requirement in sections 4.2 and 4.10, WP6 to WP8, and
+sections 6 and 7. This section's overrides for other design details still
+apply. The added extended-resource and AIM/KServe checks remain pending.
+The host references below are records, not permission to run new tests.
 
 Steps 1 to 5 of the old list are done, and step 6 is done for SPX. This
 section tells the next agent what is done, what changed from sections 4 and
