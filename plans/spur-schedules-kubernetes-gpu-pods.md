@@ -571,11 +571,13 @@ Not part of this plan. Each item has an owner or a trigger.
 
 ### Revision 5, 2026-09-30
 
-- Added section 11 with the results of the revision 4 checks on one
-  MI325X node: the configuration, the plain pod, the unchanged AIM, both
-  start orders, exhaustion and release. Items not run stay pending (11.6).
+- Added section 11: what is implemented and where, the results of the
+  revision 4 checks on one MI325X node (the configuration, the plain pod,
+  the unchanged AIM, both start orders, exhaustion and release), the
+  blockers, the security points and other findings. Items not run stay
+  pending (11.9).
 - Found the stale `amd.com/gpu` node field and its effect on aim-engine
-  (11.5).
+  (11.6).
 
 ### Revision 4, 2026-09-29
 
@@ -610,7 +612,8 @@ Not part of this plan. Each item has an owner or a trigger.
 
 ## 10. Implementation status (2026-09-24, evening)
 
-Historical record, not reverified on 2026-09-29. Revision 4 replaces the
+Historical record, not reverified on 2026-09-29. Section 11 has the status
+of 2026-09-30. Revision 4 replaces the
 old release-wait requirement in sections 4.2 and 4.10, WP6 to WP8, and
 sections 6 and 7. This section's overrides for other design details still
 apply. The added extended-resource and AIM/KServe checks remain pending.
@@ -740,25 +743,84 @@ New in this round:
 - A node name longer than 63 characters cannot be a label value, so a
   placeholder on such a node fails.
 
-## 11. Extended-resource results (2026-09-30)
+## 11. Extended-resource implementation and results (2026-09-30)
 
-This section records the work of revision 4. It replaces the "pending"
-status of the revision 4 checks in sections 4.2, 4.10, WP6, WP7 and WP8 for
-the items that it marks as passed. All other items stay pending. The user
+This section records the work of revision 4. For the items that it marks as
+passed, it replaces the "pending" status of the revision 4 checks in
+sections 4.2, 4.10, WP6, WP7 and WP8. All other items stay pending. The user
 approved the host `root@107.170.49.109` for this task only.
 
-### 11.1 Where the work is
+Nothing is pushed. No PR exists. The user allowed local commits only.
+
+### 11.1 Branches and commits
+
+| Repository | Branch and worktree | Base | Commits of this work |
+|---|---|---|---|
+| Spur | `feat/gpu-sharing-extres` in `git-worktrees/spur-gpu-sharing-extres` | `feat/gpu-sharing` rebased with `--rebase-merges` onto `origin/main` `18937f8` | `164c064` rebase fix, `e0e0428` e2e, `9403269` docs |
+| cluster-forge | `gpu-sharing-dra-extres` in `git-worktrees/cluster-forge-dra-extres` | `origin/main` `e601e899` | `65de9897` |
+| Plan | `docs/spur-schedules-k8s-gpu-pods` in `git-worktrees/spur-plan-k8s-gpu` | not changed | `37efae1` revision 4, then revision 5 |
+
+The cluster-forge branch replaces the byok branch `EAI-8560-byok-gpu-sharing`
+of WP7 and 10.1. Operator 1.5.1 and `spur-aims` are on cluster-forge main
+now, so byok is not necessary. The old byok branch is not changed and can be
+removed after a decision about the PRs.
+
+Other locations:
 
 | Item | Location |
 |---|---|
-| Spur | branch `feat/gpu-sharing-extres` in `git-worktrees/spur-gpu-sharing-extres`. It is `feat/gpu-sharing` rebased onto `origin/main` `18937f8`, plus the fix commit `164c064` for idle-fill and the audit registry, plus `e0e0428` (e2e) and `9403269` (docs). |
-| cluster-forge | branch `gpu-sharing-dra-extres` in `git-worktrees/cluster-forge-dra-extres`, based on `origin/main` `e601e899`, commit `65de9897`. It replaces the byok branch of WP7, because operator 1.5.1 and `spur-aims` are on main now. |
-| Host change log | `spur/plans/do-mi325x-change-log.md`, items 9 to 18. |
-| Host logs | `/root/dra-extres` on the host (smoke logs, daemon logs). |
+| Host change log | `spur/plans/do-mi325x-change-log.md`, items 9 to 19 |
+| Host logs | `/root/dra-extres` on the host: `smoke-a-pass.log`, `smoke-b.log`, `smoke-wait.log`, `smoke-migrated.log`, `aims-install.log`, `spurd.log`, `spurctld.log` |
+| Release binaries for Ubuntu jammy | `target-jammy/release` in the Spur worktree, built with `spur/plans/build-jammy.sh` (and `--bin spurauthd` for the e2e harness) |
 
-Nothing is pushed. No PR exists.
+### 11.2 What is implemented, and where
 
-### 11.2 Versions
+cluster-forge (`65de9897`):
+
+| File | Change |
+|---|---|
+| `sources/amd-gpu-operator-config/v1.5.1/templates/deviceclass-gpu-amd.yaml` | New. DeviceClass `gpu.amd.com`, `extendedResourceName: amd.com/gpu`, selector `device.driver == 'gpu.amd.com'`, only when `gpuSharing.enabled`. ArgoCD option `SkipDryRunOnMissingResource`. |
+| `sources/amd-gpu-operator-config/v1.5.1/templates/deviceconfig-dra.yaml` | New. DeviceConfig `gpu-operator-dra`: DRA driver with the pinned image, no device plugin, metrics exporter on node port `gpuSharing.metricsNodePort`, selector `amd-gpu=true` and `spur.amd.com/gpu-sharing=true`. |
+| `sources/amd-gpu-operator-config/v1.5.1/templates/deviceconfig-example.yaml` | The device-plugin DeviceConfig adds the selector `spur.amd.com/gpu-sharing: "false"` when GPU sharing is on. No change when it is off. |
+| `sources/amd-gpu-operator-config/v1.5.1/values.yaml`, `README.md` | Values `gpuSharing.enabled` (false), `gpuSharing.draDriverImage` (`docker.io/rocm/k8s-gpu-dra-driver:v1.0.1`), `gpuSharing.metricsNodePort` (32501). |
+| `spur/packages/amd-gpu-operator/values.yaml` | `draDriver.deviceClass.create: false`. |
+| `root/values.yaml` | `draDriver.deviceClass.create: false` in the `amd-gpu-operator` `valuesObject`, for the ArgoCD path. No version change, so `sbom/components.yaml` does not change. |
+| `spur/profiles/gpu-sharing.yaml` | New profile. Extends `default`, sets `gpuSharing.enabled: true` and the k0s `podResourceAPISocketPath`. |
+| `spur/capabilities.yaml`, `spur/spur-aims/probes.go` | Capability `gpu.spur-sharing`. The probe passes when a node with `spur.amd.com/gpu-sharing=true` has a `gpu.amd.com` ResourceSlice. Ported from the byok branch. |
+| `spur/tests/check-gpu-sharing-render.sh`, `spur/justfile`, `.github/workflows/helm-chart-checks.yaml` | New render check (`just gpu-sharing-render`) and a CI step. |
+| `spur/docs/spur-gpu-sharing.md`, `spur/README.md`, `docs/configuration-reference.md` | New operator guide, profile list entry, document link, values table. |
+
+Spur:
+
+| Commit | File | Change |
+|---|---|---|
+| `164c064` | `crates/spurctld/src/server.rs` | `get_gpu_sharing_kubeconfig` uses the new `forward_request` signature of main. Test `UpdateNodeRequest` gets `gpu_sharing: None`. |
+| `164c064` | `crates/spurctld/src/audit/registry.rs` | `GetGpuSharingKubeconfig` is in the internal daemon-to-daemon RPC list. The audit test of main requires each RPC in one list. |
+| `164c064` | `crates/spurctld/src/scheduler_loop.rs` | `start_borrowed_job` of idle-fill gets the CPX-substituted `per_node_alloc`. Tests follow the new signatures of main. |
+| `e0e0428` | `tests/native_host/e2e/test_gpu_sharing_gpu.py` | The fixture installs the driver chart with `deviceClass.create=false` and applies the class with the mapping. New test `test_extended_resource_pod_is_held`. |
+| `9403269` | `docs/deployment/gpu-sharing.rst` | New subsection "The DeviceClass" (mapping, one owner, feature gate). The Helm install sets `deviceClass.create=false`. "Run a pod on a shared node" describes `amd.com/gpu` requests and keeps the explicit-claim example. New failure case for the stale node field. |
+
+No change to Spur daemon logic was necessary for the extended resource. The
+claim watch of `spurd` counts every allocated `gpu.amd.com` claim of the pool
+of the node, so a generated claim is a hold as any other claim.
+
+Checks on the Spur branch: `cargo fmt --all --check` and `cargo clippy
+--workspace --exclude spur-ffi --all-targets --locked -- -D warnings` are
+clean. `cargo test --locked` passes 4654 tests in 40 binaries.
+
+Checks on the cluster-forge branch: `spur/tests/check-gpu-sharing-render.sh`,
+`just test`, `helm lint ./root`, `helm template` with the small, medium and
+large values, and `sbom/validate-sync.sh` pass.
+
+### 11.3 Status per work package
+
+| WP | Status of revision 4 |
+|---|---|
+| WP6 Docs | Done. `gpu-sharing.rst` in Spur, `spur/docs/spur-gpu-sharing.md` in cluster-forge. |
+| WP7 cluster-forge | Done on cluster-forge main (not byok). One DeviceClass owner, pinned image, disjoint selectors, render check in CI. |
+| WP8 e2e | Configuration, plain pod, AIM, coexistence in both orders, exhaustion and release: passed on one SPX node (11.5). CPX and multi-node checks stay pending (11.9). |
+
+### 11.4 Versions
 
 | Component | Version |
 |---|---|
@@ -770,68 +832,125 @@ Nothing is pushed. No PR exists.
 | AIM | `docker.io/amdenterpriseai/aim-meta-llama-llama-3-1-8b-instruct:0.11.1`, the smallest 1-GPU model of the catalog with a profile for this GPU |
 | GPU | 8 x MI325X virtual function, SPX, NPS1, DigitalOcean VM |
 
-### 11.3 Configuration (WP7)
-
-- The chart `amd-gpu-operator-config` is the one owner of the DeviceClass
-  `gpu.amd.com`, with `extendedResourceName: amd.com/gpu` and the selector
-  `device.driver == 'gpu.amd.com'`. It renders only with
-  `gpuSharing.enabled: true`.
-- The operator chart gets `draDriver.deviceClass.create: false` in the Spur
-  package and in `root/values.yaml`. The operator controller writes the class
-  only on OpenShift and never patches it (source of `handleDeviceClass`).
-- Two DeviceConfigs with disjoint selectors on `spur.amd.com/gpu-sharing`,
-  the DRA image pinned to v1.0.1, the device plugin off in the DRA config.
-- New Spur profile `gpu-sharing` (extends `default`), the capability
-  `gpu.spur-sharing` and its probe.
-- Check `spur/tests/check-gpu-sharing-render.sh` (`just gpu-sharing-render`,
-  also a CI step). It passes. It fails, as it must, when the operator chart
-  makes the class, when the mapping is wrong and when the profile does not
-  turn on GPU sharing.
-
-### 11.4 Results on hardware
+### 11.5 Results on hardware
 
 | Check | Result |
 |---|---|
-| Rendered manifests | Passed. One class with the mapping, pinned image, disjoint selectors. |
+| Rendered manifests | Passed. One class with the mapping, pinned image, disjoint selectors. The render check fails, as it must, when the operator chart makes the class, when the mapping is wrong and when the profile does not turn on GPU sharing. |
 | Reconcile keeps the mapping | Passed. A reinstall of the profile and an operator restart keep the same object (same UID and resourceVersion). After a manual removal of the field, `spur-aims install gpu-sharing` writes it again. |
-| Effective gate settings | Passed, see 11.2. |
+| Effective gate settings | Passed, see 11.4. |
 | Plain pod, `amd.com/gpu: 1`, no claims | Passed. Kubernetes makes `<pod>-extended-resources-<suffix>`, the container sees only the allocated card, Spur shows `held <ns>/<pod> (claim ...)`, the delete frees the GPU. |
-| Unchanged AIM serves inference | Passed, after the workaround of 11.5. The predictor has `amd.com/gpu` requests and limits and no authored claims. |
+| Unchanged AIM serves inference | Passed, after the workaround of 11.6. The predictor has `amd.com/gpu` requests and limits and no authored claims. |
 | AIM first, then Spur `gpu:7` | Passed. The job got the 7 other GPUs. The AIM answered while all 8 GPUs were in use. |
 | Spur `gpu:7` first, then AIM | Passed. The AIM got the free GPU and answered. |
 | Exhaustion | Passed in both orders. A new pod was `Unschedulable` and a new Spur job was `PD (Resources)`. |
 | Release | Passed in both orders. When a GPU became free, the next workload started. |
 | AIM waits for Spur | Passed. With a Spur `gpu:8` job, the AIM predictor was `Unschedulable`. After `scancel` the AIM started and answered. |
-| Move from device plugin to DRA | Passed with the workaround of 11.5. |
-| Spur e2e `test_extended_resource_pod_is_held` | Passed, two runs (3 of 3 tests each). The fixture now owns the class with the mapping. |
+| Move from device plugin to DRA | Passed with the workaround of 11.6. |
+| Spur e2e module `test_gpu_sharing_gpu.py` | Passed, two runs, 3 of 3 tests each, including `test_extended_resource_pod_is_held`. |
 
-### 11.5 AIM and a stale `amd.com/gpu` field
+### 11.6 Blockers
 
-When a node moves from the device plugin to DRA, the kubelet keeps
-`amd.com/gpu` in the node status: capacity 8 and allocatable 0, then 0 and 0
-after approximately 5 minutes. The kubelet checkpoint in
-`/var/lib/kubelet/device-plugins` keeps it after `spur k8s down --reset`.
+1. Stale `amd.com/gpu` node field stops aim-engine.
 
-kube-scheduler ignores the field, because the class maps `amd.com/gpu` to
-DRA. aim-engine v0.2.6 does not: `resourceMismatchReasons` in
-`internal/v1alpha2/aimprofile/node_match.go` refuses a node where the key
-exists and is less than the request. The AIMModel then has no supported
-profile, and aim-engine makes no InferenceService. A node with no key passes.
+   When a node moves from the device plugin to DRA, the kubelet keeps
+   `amd.com/gpu` in the node status: capacity 8 and allocatable 0, then 0
+   and 0 after approximately 5 minutes. The kubelet checkpoint
+   `/var/lib/kubelet/device-plugins/kubelet_internal_checkpoint` keeps it
+   after `spur k8s down --reset`.
 
-Workaround, documented in both repositories: after the 5 minutes, remove
-`/status/capacity/amd.com~1gpu` and `/status/allocatable/amd.com~1gpu` with
-a JSON patch on the node status. The kubelet does not write them again.
+   kube-scheduler ignores the field, because the class maps `amd.com/gpu` to
+   DRA. aim-engine v0.2.6 does not: `resourceMismatchReasons` in
+   `internal/v1alpha2/aimprofile/node_match.go` refuses a node where the key
+   exists and is less than the request. The AIMModel is then `NotAvailable`
+   (`NoSupportedProfiles`), and aim-engine makes no InferenceService. A node
+   with no key passes. A node that never had the device plugin is not
+   affected.
 
-Options for a permanent fix, not done, the user decides:
+   Workaround, documented in both repositories: after the 5 minutes, remove
+   `/status/capacity/amd.com~1gpu` and `/status/allocatable/amd.com~1gpu`
+   with a JSON patch on the node status. The kubelet does not write them
+   again.
 
-- `spurd` removes the two fields at opt-in, after the grace period. This
-  needs `patch` on `nodes/status` in the RBAC of the worker credential.
-- aim-engine ignores an extended resource that a DeviceClass maps. This is an
-  AIM source change, so it needs a separate approval.
+   Options for a permanent fix, not done, the user decides:
 
-No change to AIM or KServe source was made.
+   - `spurd` removes the two fields at opt-in, after the grace period. This
+     needs `patch` on `nodes/status` in the RBAC of the worker credential,
+     which is a larger permission (see 11.7).
+   - aim-engine ignores an extended resource that a DeviceClass maps. This
+     is an AIM source change, so it needs a separate approval.
 
-### 11.6 Pending
+   No change to AIM or KServe source was made.
+
+2. The cluster-forge PR needs an EAI Jira ticket. The Spur PR needs a
+   decision about the base: `feat/gpu-sharing` is not on Spur main.
+
+### 11.7 Security
+
+The points of 10.5 are unchanged. None is fixed by this work:
+
+- In `admission.mode = open`, the default, `verify_node_identity` accepts
+  any caller. Any client that reaches port 6817 can get the credential of
+  any GPU worker through `GetGpuSharingKubeconfig`: pod create in
+  `spur-system` (Pod Security `baseline`) and patch on that Node. The docs
+  warn about it. Option: refuse the RPC unless the controller enforces node
+  identity. The user decides.
+- RBAC objects of a node are not deleted when the node leaves k0s or opts
+  out. A removed node keeps a valid path to a credential until an
+  administrator deletes them.
+
+New points from this work:
+
+- The rebase puts `GetGpuSharingKubeconfig` in the audit registry list of
+  internal daemon-to-daemon RPCs. The RPC returns a credential, so an audit
+  record for it could be useful. Review this classification.
+- The permanent fix of blocker 1 in `spurd` needs `patch` on
+  `nodes/status`. With the open admission above, this permission would also
+  go to any client that reaches the controller.
+- The test host firewall allows the Spur ports only from `10.0.0.0/8` and
+  `127.0.0.0/8`. This limits the risk of open admission on that host. It is
+  a host setting, not a Spur setting.
+
+### 11.8 Other findings
+
+- The AMD operator controller (`handleDeviceClass`) makes the class only on
+  OpenShift, only when it is absent, and never patches it. On k0s the Helm
+  owner is the only writer, so the mapping stays after a reconcile.
+- The operator chart makes its class only when the API server has
+  `resource.k8s.io/v1`. A render check must give helm this API
+  (`--api-versions`), or it does not see the second class.
+- A generated claim name is `<pod>-extended-resources-<suffix>`, but it is
+  shorter for a long pod name, for example
+  `...-predictor-5f6d967f48-8zglq-extenfrh9d`. Read the name from
+  `pod.status.extendedResourceClaimStatus.resourceClaimName`, not from a
+  name prefix.
+- The generated claim has the annotation
+  `resource.kubernetes.io/extended-resource-claim: "true"`.
+- A VF host has no Node Feature Discovery label. The node needs
+  `feature.node.kubernetes.io/amd-gpu=true` by hand, or no DeviceConfig
+  selects it.
+- The DRA driver v1.0.1 version bug with `virtio_gpu` (10.3) still applies.
+  `modprobe -r virtio_gpu` was necessary again after the reinstall.
+- `spurd` refuses root jobs (`allow_root_jobs = false`). The manual tests
+  used the user `spurtest` (groups `render`, `video`). Root cannot
+  `scancel` the jobs of that user.
+- The e2e harness needs `spurauthd` in the binaries directory. The
+  `build-jammy.sh` script did not build it.
+- The e2e harness connects to the public IP of the node. On the test host
+  this needed a temporary firewall rule (change log item 17, undone in 19).
+- The teardown problem of 10.5 happened again: `spur k8s down --reset`
+  reports `phase: down` before the reset is done. A daemon stop at once left
+  k0s running, and `k0s stop; k0s reset` by hand was necessary. After the
+  first e2e run, `k0scontroller` was still active for a short time.
+- The rebase onto main needed `--rebase-merges`, because the branch has
+  merge commits. main added idle-fill, the audit registry and
+  `dispatch_timeout_secs`, and `164c064` adapts the branch to them.
+- Section 4.10 still says "CDI does not collide". Section 10.3 corrects it,
+  and `gpu-sharing.rst` describes the `k8s.` vendor rule.
+- The `/unslop` skill is not available, so it did not run on the commits
+  and documents.
+
+### 11.9 Pending
 
 - CPX partitions (10.4, step 1). The host cannot go to CPX.
 - More than one node, and a worker node with the worker credential.
@@ -842,15 +961,10 @@ No change to AIM or KServe source was made.
 - Kubernetes 1.34 and 1.35 with the alpha gate.
 - The interaction of idle-fill reclaim (from `origin/main`) with GPU holds.
   The rebase compiles and the unit tests pass, but no test covers both.
+- A code review of the rebased Spur branch and the cluster-forge branch.
 
-### 11.7 Open points
+### 11.10 Host state at the end
 
-- Security points of 10.5 are unchanged. In particular the credential RPC in
-  `admission.mode = open`.
-- The rebase adds `GetGpuSharingKubeconfig` to the audit registry as an
-  internal daemon-to-daemon RPC. Review this classification.
-- The e2e fixture uses the public IP of the node. On the test host the
-  firewall allows the Spur ports only from `10.0.0.0/8` and `127.0.0.0/8`,
-  so the run needed one more rule (change log item 17).
-- Section 4.10 still says "CDI does not collide". Section 10.3 corrects it.
-- The cluster-forge PR needs an EAI Jira ticket.
+No Spur daemons run, and k0s is reset. `virtio_gpu` stays unloaded. The user
+`spurtest` and `/root/dra-extres` stay. To restore the state before this
+work, follow item 9 of the change log.
