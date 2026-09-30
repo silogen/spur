@@ -1218,3 +1218,31 @@ Spur daemons from `verify/gpu-sharing-host` `bb65f9f` run (units
 `spurctld` and `spurd`, `KillMode=process`). k0s runs with the
 `gpu-sharing` profile. The node is shared. AIMs `aim-a` and `aim-b` run in
 `aims-test`. The firewall is active. `virtio_gpu` is unloaded.
+
+### 12.11 Main fixes 5 and 6 (2026-09-30, evening)
+
+Fix 6 (pending reason of a one-node `--gpus` job) is
+`fix/gpus-total-single-node-request` at `ec60e1e`. Fix 5 (ROCR ranks behind
+the `/dev/dri` tmpfs) is `fix/rocr-rank-under-dri-isolation` at `2e18d37`:
+`origin/main` `1141866`, the three PR 915 commits, then the fix. It now
+covers the task wrapper, joined steps, interactive sessions and
+`map_gpu` ids outside the allocation (D2 of 12.7). Nothing is pushed. The PR
+texts are in `spur/plans/pr-draft-gpus-total.md` and
+`spur/plans/pr-draft-rocr-rank.md`.
+
+Results on the MI325X host, with the test daemons outside k0s:
+
+| Build | Check | Result |
+|---|---|---|
+| `origin/main` | `-G 3` with 6 of 8 GPUs held | `Reason=Priority` (bug). |
+| Fix 6 | Same | `Reason=Resources`. A `-G 2` job still starts. |
+| `origin/main` | 2-GPU, 2-task job on GPUs 1 and 2 | Job sees 1 GPU; both step tasks see none (bug). |
+| PR 915 + fix 5 | Same | Job sees both GPUs; each step task runs on its own GPU. |
+
+Review comment on PR 915:
+https://github.com/ROCm/spur/pull/915#discussion_r4148968240
+
+Not done, because SSH access to the host ended during the round: the e2e
+files, the unprivileged `spurd` and container cases, and the test branch
+`test/verify-gs-main-fixes` (`0b0cc5b`) with k0s and the AIMs. The host
+state that is left open is item 30 of `spur/plans/do-mi325x-change-log.md`.
