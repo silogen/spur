@@ -573,8 +573,9 @@ Not part of this plan. Each item has an owner or a trigger.
 
 - Added section 12: a test round of PR 963 and cluster-forge PR 854 with
   concurrent Spur jobs, pods, a batch Job and AIMs, a host firewall, seven
-  bug fixes (four in the PR, two on main, one in cluster-forge) and the
-  findings that need a decision.
+  bug fixes (four in the PR, two on main, one in cluster-forge), the
+  findings, the decisions made during the round (12.6) and the decisions
+  for the user (12.7, D1 to D9).
 
 ### Revision 5, 2026-09-30
 
@@ -1032,6 +1033,26 @@ The PR branches keep their old commits. The new commits come after them.
 | Opt-out with an idle node | Passed after the operator restart of the guide. The device plugin started 41 s after the restart. A Spur job waited with `Reserved for Kubernetes cluster`, a pod used the device plugin. |
 | Opt-in again | Passed. The operator changed to DRA 2 s after the label change, without a restart. See 12.5. |
 | AIMs after the round trip | Blocker 1 of 11.6 came back (`NoSupportedProfiles`). The workaround worked, but only after the kubelet wrote `0/0` again (about 5 min). |
+| Spur view against the kernel | Passed. In every check, `spur show node` (free, held, job) agreed with `gpuowners.sh`. |
+| Jobs off GPU ordinal 0 behind the `/dev/dri` tmpfs | Failed before fix 5 ("no GPU visible"). Passed after it: jobs 8, 9 and 10 ran on the buses of their allocated GPUs. |
+| Only the placeholder claim of a running job deleted | Passed. The finalizer keeps the claim `allocated,reserved` until the pod is gone, so no pod can get the GPU. |
+| Stale placeholder with no live job | Passed. The orphan cleanup deleted it within 30 s. |
+| `spurd` restart with running jobs | Passed. Jobs and placeholders stayed. |
+| Placeholder of a job recovered after a `spurd` restart deleted | Failed before fix 2: a pod got the GPU of the running job (real conflict). After fix 2 the claim came back at +15 s and the pod at +44 s. After fix 3 both came back together at +19 s. |
+| Multi-task step `spur run -n 2` in a 2-GPU job, GPU 0 used by another job | Failed: "no GPU visible" in both tasks. Finding 12.5 item 2. |
+| `--gpus 3` job with 2 free GPUs | Placement correct, pending reason wrong (`Priority`). Fixed by fix 6. |
+
+Method: the conflict monitor ran every 1 to 2 s during all mixed runs. The
+Spur jobs ran as the user `spurtest`, because `allow_root_jobs = false`
+stays. The pytest e2e suite did not run in this round; section 11.5 has its
+last result.
+
+One test-procedure incident, not a product bug: early in the round, `spurd`
+ran as a transient unit without `KillMode=process`. A stop killed job 2, and
+a later restart failed while stepd processes remained, so `spurd` was down
+for about 3.5 min. The controller then failed jobs 8 to 10, as designed for a
+node that is down longer than the heartbeat timeout. After the change to
+`KillMode=process`, restarts kept all jobs.
 
 ### 12.4 Bugs fixed
 
@@ -1081,7 +1102,7 @@ the `spurd` and `spur-core` tests (1463) and clippy. spur-aims `go vet` and
 
 ### 12.5 Findings not fixed
 
-The user decides about these.
+The user decides about these (12.7).
 
 1. Spur main: controller restart changes job times. `apply_operation`
    uses `Utc::now()` for the times of the operations that it replays from
@@ -1129,23 +1150,66 @@ The user decides about these.
    have. The cluster-forge README says this and gives `spur-aims` as the
    form that always works. No change.
 
-### 12.6 Security
+### 12.6 Decisions made during the round
+
+The user was not available, so these decisions were made without a
+question. Each one can be changed.
+
+1. Keep the commit history. `origin/main` was merged into the PR branch (not
+   rebased), and all fixes are new commits after the old ones. Only commits
+   made in this round and never pushed were amended.
+2. Keep everything local: no push, no new PR, no issue, no comment.
+3. Put the two main bugs (fixes 5 and 6) on their own branches from
+   `origin/main`, not in PR 963. They are not GPU-sharing code and can be
+   reviewed alone.
+4. Run the host from the merge branch `verify/gpu-sharing-host` (PR branch
+   plus fix 5). Without fix 5, every shared-node job off GPU ordinal 0
+   fails, and the sharing tests do not give useful results.
+5. Do not fix findings 12.5 items 1 to 3. Item 1 changes persisted state,
+   item 2 needs a vendor convention, and item 3 is a design change.
+6. Make no change to aim-engine, KServe or the AMD operator source.
+7. Firewall: a separate nft table at priority -10, so the k0s iptables
+   rules stay unchanged. Public: SSH and ICMP only. Allowed: the VPC
+   interface, the pod and service CIDRs and the CNI interfaces. The older
+   iptables rules for ports 6817 to 6821 stay.
+8. Run the daemons as transient systemd units with `KillMode=process`, so a
+   `spurd` restart does not kill the stepd processes.
+9. Do not count `amd-metrics-exporter` as a GPU owner in the conflict
+   monitor (12.5 item 8).
+10. Use `spur-aims`, not `spur aims`, because Spur main has no CLI plugins.
+11. Keep `auth.mode = permissive` and `allow_root_jobs = false` of the
+    earlier configuration.
+
+### 12.7 Decisions for the user
+
+| No. | Question | Options | Proposal |
+|---|---|---|---|
+| D1 | Push the new commits? | Push `3273920`..`42b4ec6` to the PR 963 branch and `cec30a1e` to the PR 854 branch, or keep them local. | Push after review. The merge `3273920` and `1f2106f` make the red CI of PR 963 green. |
+| D2 | New PRs for fixes 5 and 6? | Open two PRs on `ROCm/spur`, or merge fix 5 into PR 963. | Two PRs. First extend fix 5 to the task wrapper (D4). |
+| D3 | Job times after a controller restart (12.5 item 1) | (a) Add a time to the Raft log operations, with `#[serde(default)]` and the replay time as the fallback for old entries. (b) Accept the behavior. | (a). File an issue first. |
+| D4 | GPU variables of multi-task steps (12.5 item 2) | (a) On AMD, set `ROCR_VISIBLE_DEVICES` to the task GPUs (as ranks when `/dev/dri` is isolated) and `CUDA_VISIBLE_DEVICES`/`GPU_DEVICE_ORDINAL` to `0..k-1`. (b) On AMD, set only `ROCR_VISIBLE_DEVICES` per task. (c) Select the form by the GPU vendor of the node. | (c), because Spur also supports NVIDIA. |
+| D5 | Opt-in gate (12.5 item 3) | (a) Keep the documented limit. (b) `spurd` reports the node as unshareable while a pod on the node has `amd.com/gpu` and no `extendedResourceClaimStatus`. (c) Also require that the node has no `amd.com/gpu` allocatable. | (b). It finds the real risk, a live device-plugin pod. |
+| D6 | Stale `amd.com/gpu` node field (blocker 1 of 11.6, seen again) | (a) `spurd` removes the field at opt-in (needs `patch` on `nodes/status`). (b) aim-engine ignores an extended resource that a DeviceClass maps. (c) Keep the manual workaround. | (b). (a) gives a larger permission to the worker credential. |
+| D7 | Race message (12.5 item 6) | (a) Log at WARN and use a reason such as "GPU taken by a Kubernetes pod, retry". (b) Keep it. | (a). Small change in PR 963. |
+| D8 | Guide text about the operator restart (12.5 item 4) | Change the reason to the "already assigned" error, or keep the text. | Change it. The instruction stays the same. |
+| D9 | Open-admission credential path (11.7) | Refuse `GetGpuSharingKubeconfig` unless the controller enforces node identity, or keep the warning. | Refuse. |
+
+### 12.8 Security
 
 - Fixed on the host: public Kubernetes ports (12.2).
-- Not changed: the open-admission credential path of 11.7 is still open.
-  The host firewall limits it on this host only.
+- Not changed: the open-admission credential path of 11.7 is still open
+  (D9). The host firewall limits it on this host only.
 - `spurd` and `spurctld` run with `auth.mode = permissive` on the host (the
   earlier test configuration). The firewall limits them to the VPC.
 
-### 12.7 Pending
+### 12.9 Pending
 
 - CPX, multi-node, ArgoCD, and Kubernetes 1.34/1.35 (11.9).
 - Idle-fill with GPU holds on hardware (needs accounting).
-- Decisions on 12.5 items 1 to 3.
-- Push of the new commits, and new PRs for fixes 5 and 6, when the user
-  approves.
+- The decisions D1 to D9 (12.7).
+- The pytest e2e suite on the new PR head.
 
-### 12.8 Host state at the end
+### 12.10 Host state at the end
 
 Spur daemons from `verify/gpu-sharing-host` `bb65f9f` run (units
 `spurctld` and `spurd`, `KillMode=process`). k0s runs with the
