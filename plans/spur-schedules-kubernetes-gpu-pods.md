@@ -991,7 +991,7 @@ any changes to github, keep everything local".
 
 | Repository | Branch and worktree | Commits of this round |
 |---|---|---|
-| Spur (PR 963) | `feat/gpu-sharing-extres` in `git-worktrees/spur-gpu-sharing-extres`, remote head `f2d21f7` | `3273920` merge of `origin/main`, `1f2106f`, `9875d56`, `42c878e`, `d82783c`, `42b4ec6` |
+| Spur (PR 963) | `feat/gpu-sharing-extres` in `git-worktrees/spur-gpu-sharing-extres`, remote head `f2d21f7` | rebased onto `origin/main` `bd28e63` (no merge commit), `b0503a7`, `6ca2800`, `db74a26`, `bd20a91`, `962c531` |
 | Spur (main bug) | `fix/rocr-rank-under-dri-isolation` in `git-worktrees/spur-rocr-rank`, from `origin/main` | `72b82cf`, then `6c5f6c3` merge of `origin/main` `1141866` |
 | Spur (main bug) | `fix/gpus-total-single-node-request` in `git-worktrees/spur-gpus-total`, from `origin/main` `1141866` | `5643952` |
 | Spur (host build) | `verify/gpu-sharing-host` in `git-worktrees/spur-gs-verify` | Merges only. PR branch plus `72b82cf`. Head `bb65f9f` runs on the host. |
@@ -1029,7 +1029,7 @@ The PR branches keep their old commits. The new commits come after them.
 | Churn: 2 rounds (1 wave, then 3 waves), 6 to 8 Spur jobs and 5 to 6 pods started together per wave, 4 free GPUs, 20 to 45 s each | Passed. 30 Spur jobs, 23 pods, 0 conflicts. 3 Spur jobs lost the race to a pod, were requeued (not failed) and completed later. |
 | Churn with a `spurd` restart in the middle | Passed. 24 jobs, 18 pods, 0 conflicts. |
 | `spurctld` restart with holds | Passed for holds: no GPU was given before the new hold report came (about 15 s). See 12.5 for the times. |
-| Deleted placeholder pod and claim of a running job | Passed after the fix `42c878e`. Both came back in one pass (19 s). |
+| Deleted placeholder pod and claim of a running job | Passed after the fix `db74a26`. Both came back in one pass (19 s). |
 | Opt-out with an idle node | Passed after the operator restart of the guide. The device plugin started 41 s after the restart. A Spur job waited with `Reserved for Kubernetes cluster`, a pod used the device plugin. |
 | Opt-in again | Passed. The operator changed to DRA 2 s after the label change, without a restart. See 12.5. |
 | AIMs after the round trip | Blocker 1 of 11.6 came back (`NoSupportedProfiles`). The workaround worked, but only after the kubelet wrote `0/0` again (about 5 min). |
@@ -1058,19 +1058,19 @@ node that is down longer than the heartbeat timeout. After the change to
 
 In PR 963:
 
-1. `1f2106f`. The PR did not compile with main: main removed
+1. `b0503a7`. The PR did not compile with main: main removed
    `check_leader` and `forward_request`. `get_gpu_sharing_kubeconfig` now
    uses `route()` and `forward_to_leader`. The flake8 E501 of the e2e test is
    fixed too.
-2. `9875d56`. After a `spurd` restart, the presence check ignored the
+2. `6ca2800`. After a `spurd` restart, the presence check ignored the
    placeholders of the recovered jobs. On the host a pod got the GPU of a
    running Spur job after its placeholder was deleted: `gpuowners.sh` showed
    a real conflict. `spurd` now adopts the recovered GPU jobs into the
-   presence check. The docs change is `d82783c`.
-3. `42c878e`. When both the placeholder claim and pod were gone, the check
+   presence check. The docs change is `bd20a91`.
+3. `db74a26`. When both the placeholder claim and pod were gone, the check
    made the claim and returned. The pod came back 30 s later. Now both come
    back in the same pass.
-4. `42b4ec6`. Idle-fill reclaim tested an evacuated node against its total
+4. `962c531`. Idle-fill reclaim tested an evacuated node against its total
    resources. On a shared node the pod-held GPUs stay held, so reclaim could
    evict borrowed jobs and the reclaimer still could not start. Reclaim now
    counts the held GPUs as allocated. Unit test only; idle-fill needs
@@ -1187,7 +1187,7 @@ question. Each one can be changed.
 
 | No. | Question | Options | Proposal |
 |---|---|---|---|
-| D1 | Push the new commits? | Push `3273920`..`42b4ec6` to the PR 963 branch and `cec30a1e` to the PR 854 branch, or keep them local. | Push after review. The merge `3273920` and `1f2106f` make the red CI of PR 963 green. |
+| D1 | Push the new commits? | Force-push the rebased branch (head `962c531`) to the PR 963 branch and `cec30a1e` to the PR 854 branch, or keep them local. | Push after review. The rebase onto `bd28e63` and `b0503a7` make the red CI of PR 963 green. |
 | D2 | New PRs for fixes 5 and 6? | One PR for each, or merge fix 5 into PR 963. | One PR for each, not in PR 963. Fix 6 is ready. Fix 5 needs work first: (1) since main `1141866`, srun steps also run behind the `/dev/dri` tmpfs, and the task wrapper of `task_launch.rs` sets `ROCR_VISIBLE_DEVICES` again from node-wide ordinals after the export of fix 5; (2) the new main e2e test `test_srun_step_gpu_bind_overrides_allocation_wide_visibility` expects `ROCR=7` for `--gpu-bind=map_gpu:7`, but fix 5 makes it `0`, so the rank must come from the staged devices and a token outside them must stay unchanged; (3) the open upstream PR 915 (`fix/gpu-visible-devices`, sets `HIP_VISIBLE_DEVICES` to `0..k-1` per task) changes the same task wrapper and `test_devices.py`. Coordinate with PR 915 before a PR for fix 5. |
 | D3 | Job times after a controller restart (12.5 item 1) | (a) Add a time to the Raft log operations, with `#[serde(default)]` and the replay time as the fallback for old entries. (b) Accept the behavior. | (a). File an issue first. |
 | D4 | GPU variables of multi-task steps (12.5 item 2). Open upstream PR 915 already sets `HIP_VISIBLE_DEVICES` to `0..k-1` per task, which is option (a) without the change of `CUDA_VISIBLE_DEVICES`. | (a) On AMD, set `ROCR_VISIBLE_DEVICES` to the task GPUs (as ranks when `/dev/dri` is isolated) and `CUDA_VISIBLE_DEVICES`/`GPU_DEVICE_ORDINAL` to `0..k-1`. (b) On AMD, set only `ROCR_VISIBLE_DEVICES` per task. (c) Select the form by the GPU vendor of the node. | (c), because Spur also supports NVIDIA. |
