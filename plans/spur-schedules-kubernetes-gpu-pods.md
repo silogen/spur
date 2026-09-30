@@ -1081,8 +1081,11 @@ On Spur main (separate branches, not part of PR 963):
 5. `72b82cf`. Under the `/dev/dri` tmpfs, a job that does not start on GPU
    ordinal 0 got "no GPU visible". ROCr counts only the devices it can open,
    so `ROCR_VISIBLE_DEVICES` must hold ranks, not node-wide ordinals. The
-   namespace wrapper now exports the ranks. With GPU sharing, jobs off
-   ordinal 0 are frequent, so this bug is easy to hit.
+   namespace wrapper now exports the ranks. The bug is on main `1141866`
+   and does not need GPU sharing: every rootful native job whose GPUs do
+   not start at ordinal 0 fails, for example the second `gpu:1` job on a
+   node. GPU sharing makes it more frequent. The fix is not ready for a PR,
+   see D2.
 6. `5643952`. A `--gpus N` job on one node probed capacity with only 1 GPU.
    The pending reason was `Priority` instead of `Resources` when 1 to N-1
    GPUs were free. The scheduler placed the job correctly.
@@ -1185,9 +1188,9 @@ question. Each one can be changed.
 | No. | Question | Options | Proposal |
 |---|---|---|---|
 | D1 | Push the new commits? | Push `3273920`..`42b4ec6` to the PR 963 branch and `cec30a1e` to the PR 854 branch, or keep them local. | Push after review. The merge `3273920` and `1f2106f` make the red CI of PR 963 green. |
-| D2 | New PRs for fixes 5 and 6? | Open two PRs on `ROCm/spur`, or merge fix 5 into PR 963. | Two PRs. First extend fix 5 to the task wrapper (D4). |
+| D2 | New PRs for fixes 5 and 6? | One PR for each, or merge fix 5 into PR 963. | One PR for each, not in PR 963. Fix 6 is ready. Fix 5 needs work first: (1) since main `1141866`, srun steps also run behind the `/dev/dri` tmpfs, and the task wrapper of `task_launch.rs` sets `ROCR_VISIBLE_DEVICES` again from node-wide ordinals after the export of fix 5; (2) the new main e2e test `test_srun_step_gpu_bind_overrides_allocation_wide_visibility` expects `ROCR=7` for `--gpu-bind=map_gpu:7`, but fix 5 makes it `0`, so the rank must come from the staged devices and a token outside them must stay unchanged; (3) the open upstream PR 915 (`fix/gpu-visible-devices`, sets `HIP_VISIBLE_DEVICES` to `0..k-1` per task) changes the same task wrapper and `test_devices.py`. Coordinate with PR 915 before a PR for fix 5. |
 | D3 | Job times after a controller restart (12.5 item 1) | (a) Add a time to the Raft log operations, with `#[serde(default)]` and the replay time as the fallback for old entries. (b) Accept the behavior. | (a). File an issue first. |
-| D4 | GPU variables of multi-task steps (12.5 item 2) | (a) On AMD, set `ROCR_VISIBLE_DEVICES` to the task GPUs (as ranks when `/dev/dri` is isolated) and `CUDA_VISIBLE_DEVICES`/`GPU_DEVICE_ORDINAL` to `0..k-1`. (b) On AMD, set only `ROCR_VISIBLE_DEVICES` per task. (c) Select the form by the GPU vendor of the node. | (c), because Spur also supports NVIDIA. |
+| D4 | GPU variables of multi-task steps (12.5 item 2). Open upstream PR 915 already sets `HIP_VISIBLE_DEVICES` to `0..k-1` per task, which is option (a) without the change of `CUDA_VISIBLE_DEVICES`. | (a) On AMD, set `ROCR_VISIBLE_DEVICES` to the task GPUs (as ranks when `/dev/dri` is isolated) and `CUDA_VISIBLE_DEVICES`/`GPU_DEVICE_ORDINAL` to `0..k-1`. (b) On AMD, set only `ROCR_VISIBLE_DEVICES` per task. (c) Select the form by the GPU vendor of the node. | (c), because Spur also supports NVIDIA. |
 | D5 | Opt-in gate (12.5 item 3) | (a) Keep the documented limit. (b) `spurd` reports the node as unshareable while a pod on the node has `amd.com/gpu` and no `extendedResourceClaimStatus`. (c) Also require that the node has no `amd.com/gpu` allocatable. | (b). It finds the real risk, a live device-plugin pod. |
 | D6 | Stale `amd.com/gpu` node field (blocker 1 of 11.6, seen again) | (a) `spurd` removes the field at opt-in (needs `patch` on `nodes/status`). (b) aim-engine ignores an extended resource that a DeviceClass maps. (c) Keep the manual workaround. | (b). (a) gives a larger permission to the worker credential. |
 | D7 | Race message (12.5 item 6) | (a) Log at WARN and use a reason such as "GPU taken by a Kubernetes pod, retry". (b) Keep it. | (a). Small change in PR 963. |
