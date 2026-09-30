@@ -569,6 +569,13 @@ Not part of this plan. Each item has an owner or a trigger.
 
 ## 9. Revision history
 
+### Revision 6, 2026-09-30
+
+- Added section 12: a test round of PR 963 and cluster-forge PR 854 with
+  concurrent Spur jobs, pods, a batch Job and AIMs, a host firewall, seven
+  bug fixes (four in the PR, two on main, one in cluster-forge) and the
+  findings that need a decision.
+
 ### Revision 5, 2026-09-30
 
 - Added section 11: what is implemented and where, the results of the
@@ -968,3 +975,179 @@ New points from this work:
 No Spur daemons run, and k0s is reset. `virtio_gpu` stays unloaded. The user
 `spurtest` and `/root/dra-extres` stay. To restore the state before this
 work, follow item 9 of the change log.
+
+## 12. Verification of PR 963 and cluster-forge PR 854 (2026-09-30, afternoon)
+
+This section records one autonomous test round on the MI325X host
+`root@107.170.49.109`. The round used Spur jobs, plain pods, a batch Job,
+a pod with an explicit ResourceClaim and two unchanged AIMs at the same time.
+It adds to section 11 and does not change it.
+
+Nothing is pushed. All new commits are local. The user said: "do not push
+any changes to github, keep everything local".
+
+### 12.1 Branches and commits
+
+| Repository | Branch and worktree | Commits of this round |
+|---|---|---|
+| Spur (PR 963) | `feat/gpu-sharing-extres` in `git-worktrees/spur-gpu-sharing-extres`, remote head `f2d21f7` | `3273920` merge of `origin/main`, `1f2106f`, `9875d56`, `42c878e`, `d82783c`, `42b4ec6` |
+| Spur (main bug) | `fix/rocr-rank-under-dri-isolation` in `git-worktrees/spur-rocr-rank`, from `origin/main` | `72b82cf`, then `6c5f6c3` merge of `origin/main` `1141866` |
+| Spur (main bug) | `fix/gpus-total-single-node-request` in `git-worktrees/spur-gpus-total`, from `origin/main` `1141866` | `5643952` |
+| Spur (host build) | `verify/gpu-sharing-host` in `git-worktrees/spur-gs-verify` | Merges only. PR branch plus `72b82cf`. Head `bb65f9f` runs on the host. |
+| cluster-forge (PR 854) | `gpu-sharing-dra-extres` in `git-worktrees/cluster-forge-dra-extres`, remote head `e9a9fea4` | `cec30a1e` |
+
+The PR branches keep their old commits. The new commits come after them.
+
+### 12.2 Host preparation
+
+- Firewall. The host had kube-proxy (10249, 10256) and kube-router (8080,
+  20244, 179) open on the public IP. These were leftovers of an incomplete
+  `k0s reset`. The nft table `inet hostfw` (unit `hostfw.service`) now drops
+  all input from the internet except SSH and ICMP, and drops new forwarded
+  connections from the public interface. A scan from outside showed only port
+  22 open.
+- Clean start: leftover k0s processes and DRA CDI specs removed, reboot.
+- Test tools: `gpuburn` (HIP, holds VRAM and prints the PCI bus of each GPU)
+  and `gpuowners.sh`, which gets the owner of each GPU from the kernel
+  (`/sys/class/kfd/kfd/proc/*/vram_*` and the cgroup of each process). It
+  reports `CONFLICT` when two workloads use one GPU. This is the ground truth
+  for all results below.
+- All changes are in `spur/plans/do-mi325x-change-log.md`, items 20 to 25.
+
+### 12.3 Results on hardware
+
+| Check | Result |
+|---|---|
+| `spur k8s up --gpu-sharing-nodes`, profile `gpu-sharing`, capability `gpu.spur-sharing` | Passed. |
+| Two unchanged AIMs serve chat completions next to Spur jobs | Passed. |
+| AIM scaled from 1 to 2 replicas while Spur jobs and a batch Job run | Passed. The second replica waited until a GPU was free, then started. |
+| Batch Job, parallelism 3, next to Spur jobs | Passed. |
+| Pod with an explicit 2-GPU ResourceClaim, then a Spur 3-GPU job | Passed. Spur showed both GPUs as held. The job waited and started when the pod ended. |
+| Multi-GPU Spur jobs on GPUs between pod holds | Passed. A 2-GPU job on GPUs 3 and 5 got `ROCR_VISIBLE_DEVICES=0,1` (with the ROCR fix) and ran on the correct buses. |
+| Exhaustion and release, both directions | Passed. |
+| Churn: 2 rounds (1 wave, then 3 waves), 6 to 8 Spur jobs and 5 to 6 pods started together per wave, 4 free GPUs, 20 to 45 s each | Passed. 30 Spur jobs, 23 pods, 0 conflicts. 3 Spur jobs lost the race to a pod, were requeued (not failed) and completed later. |
+| Churn with a `spurd` restart in the middle | Passed. 24 jobs, 18 pods, 0 conflicts. |
+| `spurctld` restart with holds | Passed for holds: no GPU was given before the new hold report came (about 15 s). See 12.5 for the times. |
+| Deleted placeholder pod and claim of a running job | Passed after the fix `42c878e`. Both came back in one pass (19 s). |
+| Opt-out with an idle node | Passed after the operator restart of the guide. The device plugin started 41 s after the restart. A Spur job waited with `Reserved for Kubernetes cluster`, a pod used the device plugin. |
+| Opt-in again | Passed. The operator changed to DRA 2 s after the label change, without a restart. See 12.5. |
+| AIMs after the round trip | Blocker 1 of 11.6 came back (`NoSupportedProfiles`). The workaround worked, but only after the kubelet wrote `0/0` again (about 5 min). |
+
+### 12.4 Bugs fixed
+
+In PR 963:
+
+1. `1f2106f`. The PR did not compile with main: main removed
+   `check_leader` and `forward_request`. `get_gpu_sharing_kubeconfig` now
+   uses `route()` and `forward_to_leader`. The flake8 E501 of the e2e test is
+   fixed too.
+2. `9875d56`. After a `spurd` restart, the presence check ignored the
+   placeholders of the recovered jobs. On the host a pod got the GPU of a
+   running Spur job after its placeholder was deleted: `gpuowners.sh` showed
+   a real conflict. `spurd` now adopts the recovered GPU jobs into the
+   presence check. The docs change is `d82783c`.
+3. `42c878e`. When both the placeholder claim and pod were gone, the check
+   made the claim and returned. The pod came back 30 s later. Now both come
+   back in the same pass.
+4. `42b4ec6`. Idle-fill reclaim tested an evacuated node against its total
+   resources. On a shared node the pod-held GPUs stay held, so reclaim could
+   evict borrowed jobs and the reclaimer still could not start. Reclaim now
+   counts the held GPUs as allocated. Unit test only; idle-fill needs
+   accounting, which the host does not have.
+
+On Spur main (separate branches, not part of PR 963):
+
+5. `72b82cf`. Under the `/dev/dri` tmpfs, a job that does not start on GPU
+   ordinal 0 got "no GPU visible". ROCr counts only the devices it can open,
+   so `ROCR_VISIBLE_DEVICES` must hold ranks, not node-wide ordinals. The
+   namespace wrapper now exports the ranks. With GPU sharing, jobs off
+   ordinal 0 are frequent, so this bug is easy to hit.
+6. `5643952`. A `--gpus N` job on one node probed capacity with only 1 GPU.
+   The pending reason was `Priority` instead of `Resources` when 1 to N-1
+   GPUs were free. The scheduler placed the job correctly.
+
+In cluster-forge PR 854:
+
+7. `cec30a1e`. On a cluster where all GPU nodes are shared, `spur aims
+   status` showed `gpu.amd` as missing, because the probe looked only for the
+   device plugin. The probe now also passes when a `gpu.amd.com`
+   ResourceSlice exists.
+
+Test status: PR branch 4660 tests pass, `cargo fmt` and `cargo clippy -D
+warnings` are clean. The fix branch 6 passes the `spur-sched` and `spurctld`
+tests and clippy. The fix branch 5, after the merge of main `1141866`, passes
+the `spurd` and `spur-core` tests (1463) and clippy. spur-aims `go vet` and
+`go test` pass.
+
+### 12.5 Findings not fixed
+
+The user decides about these.
+
+1. Spur main: controller restart changes job times. `apply_operation`
+   uses `Utc::now()` for the times of the operations that it replays from
+   the Raft log. After a `spurctld` restart, the submit and start times of
+   running jobs, and the end time of a job that ended just before, became
+   the restart time. The time limit of a running job starts again. The fix
+   needs a time in the log operations (a persisted-state change, see
+   "Breaking Changes" in `AGENTS.md`). No upstream issue was found.
+2. Spur main: GPU environment of multi-task steps. `spur run -n 2` in a
+   2-GPU job gave "no GPU visible" in both tasks. The task wrapper of
+   `spur-core/src/task_launch.rs` sets `ROCR_VISIBLE_DEVICES`,
+   `CUDA_VISIBLE_DEVICES` and `GPU_DEVICE_ORDINAL` to the same node-wide
+   ordinals. HIP applies `CUDA_VISIBLE_DEVICES` to the list that ROCr
+   gives, so the filter applies two times. This also occurs without
+   `/dev/dri` isolation when the task GPUs are not the first ones. Main
+   `1141866` puts steps behind the `/dev/dri` tmpfs, so the fix 5 must also
+   cover the task wrapper. A fix needs a decision about the variables on
+   NVIDIA, where `CUDA_VISIBLE_DEVICES` is node-wide.
+3. PR 963: the opt-in gate checks only that a ResourceSlice exists. It does
+   not check that the device plugin and its pods are gone. On the host the
+   first Spur job started 2 s after the slice appeared. The guide tells the
+   administrator to block placements in both schedulers during a mode
+   change, so this is a documented limit. An automatic check needs `spurd`
+   to find pods with device-plugin GPUs on the node.
+4. PR 963 guide: the operator behaved differently in the two directions.
+   Opt-out needed the restart (the operator refused with "node already
+   assigned to DeviceConfig gpu-operator-dra"). Opt-in worked without it.
+   The guide says that the operator does not see a label change. The error
+   text above is the real cause. The restart is correct in both directions.
+5. PR 963: the kubelet writes the stale `amd.com/gpu` field again as `0/0`
+   about 5 min after the switch to DRA. A patch before that time does not
+   stay. The guide says "after the 5 minutes"; keep that wording.
+6. PR 963: a job that loses the race to a pod shows the pending reason
+   `JobLaunchFailure (dispatch confirmation failed (0/1 confirmed): 1
+   gpu/resource allocation mismatch)`, and the controller logs it at ERROR.
+   The job is requeued as designed. The text and level make a normal race
+   look like a fault.
+7. PR 963: `spur show node` shows an old hold report as current. The
+   scheduler treats it as "all held", so only the display is wrong.
+8. Host: the preinstalled `amd-metrics-exporter` runs `rocpctl` on all 8
+   GPUs for a few seconds every 2 min. It is not a workload and it does not
+   take a GPU from Spur or Kubernetes, but it runs profiler counters on GPUs
+   that jobs use.
+9. `spur aims` needs a `spur` build with CLI plugins, which main does not
+   have. The cluster-forge README says this and gives `spur-aims` as the
+   form that always works. No change.
+
+### 12.6 Security
+
+- Fixed on the host: public Kubernetes ports (12.2).
+- Not changed: the open-admission credential path of 11.7 is still open.
+  The host firewall limits it on this host only.
+- `spurd` and `spurctld` run with `auth.mode = permissive` on the host (the
+  earlier test configuration). The firewall limits them to the VPC.
+
+### 12.7 Pending
+
+- CPX, multi-node, ArgoCD, and Kubernetes 1.34/1.35 (11.9).
+- Idle-fill with GPU holds on hardware (needs accounting).
+- Decisions on 12.5 items 1 to 3.
+- Push of the new commits, and new PRs for fixes 5 and 6, when the user
+  approves.
+
+### 12.8 Host state at the end
+
+Spur daemons from `verify/gpu-sharing-host` `bb65f9f` run (units
+`spurctld` and `spurd`, `KillMode=process`). k0s runs with the
+`gpu-sharing` profile. The node is shared. AIMs `aim-a` and `aim-b` run in
+`aims-test`. The firewall is active. `virtio_gpu` is unloaded.
