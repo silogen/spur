@@ -1246,3 +1246,17 @@ Not done, because SSH access to the host ended during the round: the e2e
 files, the unprivileged `spurd` and container cases, and the test branch
 `test/verify-gs-main-fixes` (`0b0cc5b`) with k0s and the AIMs. The host
 state that is left open is item 30 of `spur/plans/do-mi325x-change-log.md`.
+
+Round 2 (2026-10-01, `spur/plans/test-plan-main-gpu-fixes-round2.md`,
+logs in `spur/plans/round2-evidence`) did the open checks:
+
+| Build | Check | Result |
+|---|---|---|
+| PR 915 (`741e28d`) | 2-GPU, 2-task job on GPUs 1 and 2 | Bug: job sees 1 GPU, step task 1 sees none. |
+| PR 915 + fix 5 | Same, root and unprivileged `spurd` | Passed. Unprivileged values stay node-wide. |
+| PR 915 + fix 5 | e2e device, GPU and container files, non-root SSH user | Passed, except a `/dev/kfd` probe that also fails on main (driver `EINVAL`). The container tests needed `kernel.apparmor_restrict_unprivileged_userns=0` for the run. |
+| `origin/main` | New e2e test | Fails (finds the bug). |
+| Verify + fix 5 + fix 6 | k0s, GPU sharing, two AIMs | `spur show node` agrees with the claims; `-G 3` shows `Resources`; fix 5 job passes; AIMs stay `Running`. |
+
+The host runs the `bb65f9f` binaries again (D9). Other users also run Docker
+GPU containers on the host outside Spur.
