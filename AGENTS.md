@@ -20,6 +20,16 @@ cargo build
 - **Proto**: `proto/slurm.proto` is the public API surface that FFI and REST depend on. `raft_internal.proto` is separate — internal controller-to-controller plumbing only.
 - **Config**: TOML format at `/etc/spur/spur.conf`. See `spur-core/src/config.rs` for all fields.
 
+## Architecture Decisions
+
+`docs/adr/` records why Spur is built the way it is. The format and the rules are in [ADR 0001](docs/adr/0001-record-architecture-decisions.md).
+
+- Before you change an area, read its ADRs: `grep -ril <topic> docs/adr`.
+- Do not contradict an accepted ADR silently. If your change reverses a decision, write a new ADR that supersedes the old one, in the same PR.
+- Write an ADR only when all three are true: the decision is hard to reverse, it surprises a reader without context, and it is the result of a real trade-off.
+- An ADR is short and self-contained: frontmatter `status:` (and `date:` if known), a title, and 1-3 sentences of context, decision, and reason. Link only to public PRs and issues of this repository.
+- Do not repeat an ADR's reason in this file or in `docs/`. State the rule and link to the ADR.
+
 ## Conventions
 
 - Proto conversion helpers live in the same file as the gRPC server (e.g., `server.rs` has `proto_to_job_spec`, `job_to_proto`).
