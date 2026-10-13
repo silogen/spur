@@ -50,7 +50,7 @@ All three conditions must be true:
 - Do not change the decision in an accepted ADR. To change a decision, write
   a new ADR and set the status of the old ADR to `superseded by NNNN`. You
   can correct typos and links.
-- Do not copy the reason into other files. Other files state the rule and
-  link to the ADR.
+- `AGENTS.md` states the rule and links to the ADR for the reason. User and
+  admin guides can keep explanations needed to operate the system.
 - The Sphinx site does not publish `docs/adr/` (`exclude_patterns` in
   `docs/conf.py`).

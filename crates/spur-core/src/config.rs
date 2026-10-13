@@ -235,12 +235,8 @@ impl MetricsConfig {
 /// REST API settings for spurctld (Slurm-compatible HTTP on a separate port).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RestApiConfig {
-    /// When false, spurctld does not start the REST server.
-    ///
-    /// Defaults to FALSE: the REST surface performs no authentication, and its submit handler builds
-    /// a job spec directly from the request body, so enabling it on a reachable address exposes
-    /// unauthenticated job submission. Enable it only behind an authenticating proxy or on a
-    /// loopback/administrative interface.
+    /// When false, spurctld does not start the REST server. Off by default; see
+    /// docs/adr/0003-accounting-and-rest-inside-spurctld.md.
     #[serde(default)]
     pub enabled: bool,
     /// Allow REST on a non-loopback address when native auth is `plugin = "spur"` and

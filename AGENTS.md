@@ -12,13 +12,13 @@ cargo build
 
 ## Architecture
 
-- **spurctld** — Controller daemon. Serves the gRPC API (`SlurmController` + `SlurmAccounting` on port 6817). Accounting runs in-process backed by PostgreSQL (`accounting.database_url`). Supports HA via Raft log replication (openraft, always-on — even single-node runs a 1-member Raft cluster). Leader handles writes; non-leaders forward automatically.
+- **spurctld** — Controller daemon. Serves the gRPC API (`SlurmController` + `SlurmAccounting` on port 6817). Accounting runs in-process backed by PostgreSQL (`accounting.database_url`). Raft (openraft) runs on every controller, also a single one, and Raft logs and snapshots store durable cluster state ([ADR 0002](docs/adr/0002-raft-on-every-controller.md)). Leader handles writes; non-leaders forward automatically.
 - **spurd** — Node agent daemon. Runs on each compute node. Registers with the controller, sends heartbeats, and receives job launch/cancel commands via gRPC (`SlurmAgent` on port 6818).
-- **spurstepd** — Job supervisor, spawned by `spurd` for each launched job and for each numbered `srun` step inside one, surviving an `spurd` restart/upgrade independently. A genuinely separate binary from `spurd` (not a subcommand): it sits beside a job's execution for that job's whole lifetime, a different trust/threat boundary than `spurd`'s network-facing RPC and cluster-admin (k0s) surface, so its process never runs that code at all. It still depends on the `spurd` lib crate as a whole (the runtime-only surface — `executor`/`container`/`stepd` — isn't split into its own crate yet), so this is a runtime, not link-time, isolation boundary. Talks to `spurd` over a local, versioned Unix-socket protocol (see `spurd::stepd`), never over the network.
+- **spurstepd** — Job supervisor, a separate binary. `spurd` spawns one for each launched job and for each numbered `srun` step, and it survives a `spurd` restart or upgrade. Talks to `spurd` over a local, versioned Unix-socket protocol (see `spurd::stepd`), never over the network ([ADR 0005](docs/adr/0005-spurstepd-separate-binary.md)).
 - **spur-cli** — Multi-call CLI binary. Talks to `spurctld` for scheduling, admin, and accounting (all on port 6817). Invoked as `spur <command>` (e.g. `spur submit`, `spur queue`) or via Slurm-compatible symlinks (`sbatch`, `squeue`, `sinfo`, etc.).
-- **No separate daemons for accounting or REST.** Slurm splits these into `slurmdbd` and `slurmrestd`. In Spur, `spurctld` handles accounting (backed by PostgreSQL) and the REST API (Axum) directly, avoiding an extra *network-facing* daemon and the inter-daemon networking that would come with one. `spurstepd` is a separate binary for a different reason (privilege/fault isolation for a local per-job supervisor, not a network service) — see the `spurstepd` entry above.
-- **Proto**: `proto/slurm.proto` is the public API surface that FFI and REST depend on. `raft_internal.proto` is separate — internal controller-to-controller plumbing only.
-- **Config**: TOML format at `/etc/spur/spur.conf`. See `spur-core/src/config.rs` for all fields.
+- **No separate daemons for accounting or REST.** `spurctld` serves accounting (backed by PostgreSQL) and the REST API (Axum) itself ([ADR 0003](docs/adr/0003-accounting-and-rest-inside-spurctld.md), [ADR 0004](docs/adr/0004-postgresql-for-accounting.md)).
+- **Proto**: `proto/slurm.proto` is the public API surface that FFI and REST depend on. `raft_internal.proto` is internal controller-to-controller traffic only ([ADR 0007](docs/adr/0007-public-and-internal-protos.md)).
+- **Config**: TOML format at `/etc/spur/spur.conf` ([ADR 0008](docs/adr/0008-toml-configuration.md)). See `spur-core/src/config.rs` for all fields.
 
 ## Architecture Decisions
 
@@ -28,14 +28,14 @@ cargo build
 - Do not contradict an accepted ADR silently. If your change reverses a decision, write a new ADR that supersedes the old one, in the same PR.
 - Write an ADR only when all three are true: the decision is hard to reverse, it surprises a reader without context, and it is the result of a real trade-off.
 - An ADR is short and self-contained: frontmatter `status:` (and `date:` if known), a title, and 1-3 sentences of context, decision, and reason. Link only to public PRs and issues of this repository.
-- Do not repeat an ADR's reason in this file or in `docs/`. State the rule and link to the ADR.
+- In this file, state the rule and link to its ADR for the reason. User and admin guides can keep explanations needed to operate the system.
 
 ## Conventions
 
 - Proto conversion helpers live in the same file as the gRPC server (e.g., `server.rs` has `proto_to_job_spec`, `job_to_proto`).
 - When designing, implementing, or updating RPC calls, avoid unbounded requests: set a clear timeout unless there is a specific, justified reason not to.
 - Write idiomatic Rust. Keep control flow flat — use early returns and `?` instead of deep nesting. Prefer small, focused functions that are independently testable.
-- Slurm compatibility is a migration bridge, not a design constraint. Only user-facing surfaces (CLI, REST API, FFI) need to stay compatible. Internals should prefer simple, modern defaults — do not inherit legacy complexity.
+- Slurm compatibility applies only to user-facing surfaces (CLI, REST API, FFI). Internals use simple, modern defaults ([ADR 0006](docs/adr/0006-slurm-compatibility-scope.md)).
 - User-facing changes ship with docs. Whenever you change CLI flags, REST/gRPC API surface, config fields, or user-visible behavior, check `docs/` and update the pages that describe it; a new feature must always be documented — consider whether it warrants its own page or subsection rather than a passing mention.
 
 ## Git Workflow
